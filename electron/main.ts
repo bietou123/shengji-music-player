@@ -12,7 +12,7 @@ import { fetchMedia, JsonClient, validateMediaUrl } from './network';
 import { isOpenLicense, SourceRegistry } from './sources';
 import { LyricsService } from './lyrics';
 import { audioEffectsSchema } from '../shared/audio-effects';
-import type { AudioEffectsSettings, DownloadRecord, MiniState, PlaybackState, PlayerCommand, PlayerSummary, SearchRequest, Settings, Track } from '../shared/types';
+import type { AudioEffectsSettings, DownloadRecord, MiniState, PlaybackState, PlayerCommand, PlayerSummary, SearchRequest, Settings, Track, VisualState } from '../shared/types';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const TEST = process.env.SHENGJI_TEST === '1';
@@ -39,7 +39,7 @@ let lastEffectsCheckpoint: AudioEffectsSettings | undefined;
 
 const idSchema = z.string().min(1).max(2000);
 const sourceSchema = z.enum(['netease', 'itunes', 'archive', 'jamendo']);
-const settingsSchema = z.object({ theme: z.enum(['light', 'dark', 'system']), enabledSources: z.array(sourceSchema).max(4), downloadDir: z.string().max(1000), closeToTray: z.boolean(), mediaKeys: z.boolean() });
+const settingsSchema = z.object({ theme: z.enum(['light', 'dark', 'system']), enabledSources: z.array(sourceSchema).max(4), downloadDir: z.string().max(1000), closeToTray: z.boolean(), mediaKeys: z.boolean(), glassEffects: z.boolean().default(true), motionEffects: z.boolean().default(true) });
 const playbackSchema = z.object({ queue: z.array(idSchema).max(10000), currentId: idSchema.nullable(), index: z.number().int().min(-1).max(10000), position: z.number().finite().min(0).max(86400), volume: z.number().min(0).max(1), muted: z.boolean(), mode: z.enum(['order', 'loop', 'one', 'shuffle']) });
 const nameSchema = z.string().trim().min(1).max(60);
 
@@ -77,6 +77,28 @@ function getJamendoKey(): string | undefined {
 
 function sendCommand(command: PlayerCommand): void { window?.webContents.send('player:command', command); }
 function showMain(): void { if (TEST) window?.showInactive(); else { window?.show(); window?.focus(); } }
+
+function visualState(target: BrowserWindow): VisualState {
+  const features = app.getGPUFeatureStatus();
+  const settings = database.settings();
+  return {
+    visible: target.isVisible() && !target.isMinimized(),
+    hardwareAccelerated: app.isHardwareAccelerationEnabled() && features.gpu_compositing === 'enabled' && features.webgl?.startsWith('enabled'),
+    settings: { theme: settings.theme, glassEffects: settings.glassEffects, motionEffects: settings.motionEffects },
+  };
+}
+
+function sendVisualState(target: BrowserWindow | null): void {
+  if (target && !target.isDestroyed() && !target.webContents.isDestroyed()) target.webContents.send('visual:state', visualState(target));
+}
+
+function observeVisualState(target: BrowserWindow): void {
+  // Audio stays unthrottled; only the renderer's visual frame clock is suspended.
+  const update = () => sendVisualState(target);
+  target.on('show', update); target.on('hide', update);
+  target.on('minimize', update); target.on('restore', update);
+  target.webContents.on('did-finish-load', () => sendVisualState(target));
+}
 
 function updateTray(): void {
   if (!tray) return;
@@ -117,6 +139,7 @@ async function createWindow(): Promise<void> {
     webPreferences: { preload: path.join(ROOT, 'dist-electron', 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false, webSecurity: true },
   });
   window.once('ready-to-show', () => { if (TEST) window?.showInactive(); else window?.show(); });
+  observeVisualState(window);
   window.on('close', (event) => {
     if (!quitting && database.settings().closeToTray && !TEST) { event.preventDefault(); window?.hide(); return; }
     if (window && !TEST) { const [width, height] = window.getSize(); database.setValue('windowSize', { width, height }); }
@@ -132,6 +155,7 @@ async function showMini(): Promise<void> {
       ...(TEST ? { x: -13000, y: -13000, skipTaskbar: true } : {}), show: false, backgroundColor: '#ffffff',
       webPreferences: { preload: path.join(ROOT, 'dist-electron', 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
     mini.on('closed', () => { mini = null; });
+    observeVisualState(mini);
     await load(mini, true);
   }
   if (TEST) mini.showInactive(); else mini.show();
@@ -175,6 +199,10 @@ async function downloadTrack(id: string): Promise<DownloadRecord | null> {
 }
 
 function registerIPC(): void {
+  ipcMain.handle('visual:state', (event) => {
+    if (!trusted(event)) throw new Error('拒绝来自不受信任页面的请求');
+    return visualState(event.sender === mini?.webContents ? mini! : window!);
+  });
   handle('library:bootstrap', () => ({ ...database.snapshot(), sources: sources.descriptors() }));
   handle('catalog:search', async (input: SearchRequest) => {
     const request = z.object({ query: z.string().trim().min(1).max(150), kind: z.enum(['song', 'artist', 'album']), sources: z.array(sourceSchema).max(4).optional() }).parse(input);
@@ -235,7 +263,8 @@ function registerIPC(): void {
     const settings = settingsSchema.parse(input);
     if (!path.isAbsolute(settings.downloadDir)) throw new Error('下载目录必须是完整路径');
     settings.enabledSources = settings.enabledSources.filter((id) => id !== 'jamendo' || Boolean(getJamendoKey()));
-    database.setValue('settings', settings); updateMediaKeys(settings); return settings;
+    database.setValue('settings', settings); updateMediaKeys(settings);
+    sendVisualState(window); sendVisualState(mini); return settings;
   });
   handle('settings:jamendo-key', (key: string) => {
     const value = z.string().trim().max(100).regex(/^[a-zA-Z0-9]*$/).parse(key);
@@ -295,7 +324,7 @@ if (!TEST && !app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', showMain);
   app.whenReady().then(async () => {
-    const defaults: Settings = { theme: 'light', enabledSources: ['netease', 'itunes'], downloadDir: path.join(app.getPath('music'), '声迹下载'), closeToTray: false, mediaKeys: true };
+    const defaults: Settings = { theme: 'light', enabledSources: ['netease', 'itunes'], downloadDir: path.join(app.getPath('music'), '声迹下载'), closeToTray: false, mediaKeys: true, glassEffects: true, motionEffects: true };
     database = await LibraryDatabase.open(path.join(app.getPath('userData'), 'library.sqlite'), defaults, TEST);
     library = new LocalLibrary(database, path.join(app.getPath('userData'), 'artwork'), (done, total) => window?.webContents.send('import:progress', { done, total }));
     const client = new JsonClient();
@@ -326,3 +355,4 @@ app.on('before-quit', () => {
   tray?.destroy(); tray = null;
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+app.on('gpu-info-update', () => { if (database) { sendVisualState(window); sendVisualState(mini); } });

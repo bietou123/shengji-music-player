@@ -1,6 +1,6 @@
 # 声迹
 
-真正可用的 Windows 桌面音乐播放器。Electron + React + TypeScript，浅色与近黑色主题，本地资料库、真实在线搜索、同步歌词、十段均衡器、真实音频频谱、播放队列、收藏及自建歌单。首页直接进入播放器，不使用假曲目或演示数据。
+真正可用的 Windows 桌面音乐播放器。Electron + React + TypeScript，液态玻璃视觉、浅色与近黑色主题，本地资料库、真实在线搜索、同步歌词、十段均衡器、真实音频频谱、播放队列、收藏及自建歌单。首页直接进入播放器，不使用假曲目或演示数据。
 
 [公开源码](https://github.com/bietou123/shengji-music-player) · [发行包](https://github.com/bietou123/shengji-music-player/releases) · [实际测试结果](TEST-RESULTS.md)
 
@@ -8,8 +8,8 @@
 
 支持 Windows 10/11 x64，已在 Windows 11 x64 实测。普通用户不需要 Node.js、Python、数据库服务或其他开发环境。
 
-- 安装版：`Shengji-1.1.0-x64-nsis.exe`，可选择安装目录，创建桌面及开始菜单快捷方式。
-- 便携版：`Shengji-1.1.0-x64-portable.exe`，双击运行，不需安装。
+- 安装版：`Shengji-1.2.0-x64-nsis.exe`，可选择安装目录，创建桌面及开始菜单快捷方式。
+- 便携版：`Shengji-1.2.0-x64-portable.exe`，双击运行，不需安装。
 - 两种版本均包含 Electron、Chromium 音频引擎、SQLite WASM 和运行依赖。
 - 当前发行版未购买代码签名证书。Windows 可能显示未知发布者或 SmartScreen 提示，请核对下载来源与 SHA-256。不要关闭系统防护。
 - “便携版”指程序免安装；用户资料仍保存在 `%APPDATA%\Shengji`，不与 EXE 放在一起。
@@ -47,11 +47,26 @@ Jamendo 凭据由 Electron `safeStorage` 使用 Windows DPAPI 加密，不写入
 - 歌单：创建、重命名、删除、添加 / 移除曲目、拖拽排序。收藏、最近播放、搜索历史均可保存。
 - 歌词：优先读取音频旁边同名 UTF-8 `.lrc`，网易云完整曲目可获取在线歌词及翻译，同步歌词支持点击跳转。本地曲目只有主动点击“匹配在线歌词”才联网匹配。
 - 音效：底部音效按钮打开十段均衡器、音色预设、立体声宽度及动态压缩；立即生效并保存，可一键关闭音效恢复原声。
-- 动画：频谱来自实际播放信号，暂停时冻结，不播放时不模拟跳动。页面切换与队列有轻量过渡，并尊重系统“减少动态效果”设置。
+- 外观：播放栏、导航选中态、搜索工具栏、菜单、音效面板和迷你播放器使用玻璃材质；设置可分别关闭“玻璃效果”和“界面动画”。
+- 动画：按压回弹、连续滑动的导航指示器、切歌及面板进出过渡。频谱来自实际播放信号，暂停时冻结，不播放时不模拟跳动；尊重系统“减少动态效果”。
 - 系统：媒体键、系统媒体会话、托盘播放控制、迷你播放器。关闭到托盘可以在设置中开启，默认关闭窗口即退出。
 - 重启：恢复队列、当前曲目、进度、音量、静音、播放模式、主题和歌单，**不会自动播放**。
 
 删除资料库条目或移除扫描目录不会删除磁盘上的音乐。目录扫描为手动重新扫描，不是实时文件系统监视。
+
+## 液态玻璃与 GPU
+
+1.2.0 的视觉参考 iOS 26 Liquid Glass，**不是 Windows 上的苹果原生材质**，也不是任意 DOM 的物理级光线追踪。
+
+- **真实页面背景**：Chromium `backdrop-filter` 模糊玻璃后方的实际 DOM；透明填色、内侧边缘及阴影提供厚度感。它不读取 Windows 桌面或其他应用。
+- **真实封面折射**：Three.js / WebGL2 片元着色器对播放栏及迷你窗口的实际封面下衬做边缘位移采样。DOM 图像与纹理使用相同的 `object-fit: cover` 映射。图像只在更换时缩至最长边 512 像素，绝不截屏 DOM；远程图像不允许 CORS 时仍可显示，但不交给着色器采样。
+- **光学近似**：圆角距离场形成窄边缘的折射、柔和高光及 Fresnel 近似，高光随指针移动。其他玻璃表面只有真实 DOM 模糊和近似边缘光照，不宣称着色器能够直接读取它们后方的页面。没有封面时不生成假背景。
+- **交互路径**：按压、导航和面板使用 `transform` / `opacity`，不逐帧动画化布局。进度、音量及均衡器滑块即时更新，不等待动画；列表保留紧凑普通行，不逐行增加玻璃层。
+- **渲染预算**：每个窗口只有一个 WebGL 画布与一个共享 RAF 调度器，最多 8 个复用的光学表面；画布最多约 150 万像素，DPR 不超过 1.5。交互结束后不继续提交玻璃帧。频谱以约 30Hz 读取真实 Web Audio 信号，不每帧更新 React 全局状态。
+- **可见性与降级**：隐藏、最小化、页面不可见或频谱滚出视野时停止不必要的绘制，音频继续运行。减少动态效果或关闭动画后保持静态材质。Electron 报告硬件合成不可用、WebGL2 创建失败或上下文丢失时改用不透明普通界面，播放、搜索和操作不依赖 WebGL；可恢复的上下文恢复后重新绘制。
+- **安全边界**：沿用 Chromium 默认硬件选择与驱动黑名单，不强制启用 GPU，不关闭 sandbox、`contextIsolation` 或 `webSecurity`。主窗口与迷你窗口实时同步主题及视觉开关。
+
+硬件后端、像素读回、交互帧间隔和 Chromium trace 的实测结果及限制见 [TEST-RESULTS.md](TEST-RESULTS.md)。测试中的屏外渲染提交率不等同于屏幕显示帧率；不以 canvas 存在或配置开关冒充 GPU / 60fps 验证。
 
 ## 歌词与音效
 
@@ -77,6 +92,10 @@ Jamendo 凭据由 Electron `safeStorage` 使用 Windows DPAPI 加密，不写入
 src/                  React 视图、Zustand 状态、Chromium HTMLAudio 播放控制
 src/audio-graph.ts    Web Audio 均衡器、输入余量、压缩、声场和 FFT 分析
 src/Spectrum.tsx      实际信号的 canvas 频谱、暂停与减少动态效果适配
+src/Glass.tsx         单个 Three.js WebGL2 光学层、真实封面下衬与硬件降级
+src/glass.css         DOM 背景玻璃、短促过渡、浅深主题与无动画样式
+src/visual-runtime.ts 按需 RAF 调度、窗口及页面可见性、动态效果策略
+src/Presence.tsx      菜单与面板退出动画期间的生命周期
 shared/               曲目 / IPC 类型、版本感知聚合、队列与音效预设逻辑
 electron/main.ts      窗口、托盘、媒体键、IPC 校验、授权下载
 electron/preload.ts   contextBridge 白名单 API
@@ -113,12 +132,13 @@ npm test
 npm run test:online
 npm run build
 npm run test:e2e
+npm run test:glass
 npm run package
 # 打包完成后验证便携启动器、播放及恢复
 npm run test:portable
 ```
 
-端到端测试默认读取桌面的 `Florian Bur - Living.mp3`，只读取，不修改原文件。其他电脑可以指定自己的合法 MP3（这项测试仍会检查 Living / Florian Bur 的标签）。测试生成独立资料库和带标签 / LRC 的 WAV，不修改正常使用数据；窗口位于屏幕外，不占任务栏、不创建测试托盘，通过 Chromium `--mute-audio` 保持扬声器静音。音效测试使用已知频率的数字信号实测 FFT、均衡器增益和压缩器变化，不把静音测试冒充人工试听。
+端到端测试默认读取桌面的 `Florian Bur - Living.mp3`，只读取，不修改原文件。其他电脑可以指定自己的合法 MP3（这项测试仍会检查 Living / Florian Bur 的标签）。测试生成独立资料库和带标签 / LRC 的 WAV，不修改正常使用数据；窗口位于屏幕外，不占任务栏、不创建测试托盘，通过 Chromium `--mute-audio` 保持扬声器静音。音效测试使用已知频率的数字信号实测 FFT、均衡器增益和压缩器变化，不把静音测试冒充人工试听。玻璃测试另用明确命名的合成封面测试图验证颜色与像素变化，它不属于产品默认内容，也不随发行包发布。
 
 ```powershell
 $env:SHENGJI_LOCAL_TEST_FILE = 'D:\Music\Florian Bur - Living.mp3'
@@ -131,6 +151,12 @@ npm run test:e2e
 # 验证打包后的程序而不是开发 Electron
 $env:SHENGJI_E2E_EXECUTABLE = (Resolve-Path 'release\win-unpacked\声迹.exe').Path
 npm run test:e2e
+npm run test:glass
+
+# 更详细的 GPU 服务跟踪，另存详细样本，不覆盖标准证据
+$env:SHENGJI_GLASS_TRACE_DETAIL = '1'
+npm run test:glass
+Remove-Item Env:SHENGJI_GLASS_TRACE_DETAIL
 
 # 便携启动器不转发 inspector 输出，使用独立的本机 CDP 测试
 npm run test:portable
@@ -152,6 +178,7 @@ PowerShell 中环境变量会保留到当前终端关闭；重新做联网测试
 - 没有封面：该文件可能没有内嵌封面，或平台封面暂时不可达，显示唱片占位图标。
 - 没有歌词：先检查同名 LRC；本地曲目可主动联网匹配。纯音乐不伪造歌词，试听不假装有完整版同步歌词，网络失败可单独重试。
 - 音色不适合：自动适配只根据标签选择预设，可改为原声、其他音色或自定义；关闭音效即可旁路均衡器、压缩和声场处理。
+- 玻璃或动画不合适：在设置中分别关闭。系统减少动态效果会自动停用动画；GPU / WebGL 不可用时自动降级，不需要关闭系统安全机制。
 - 媒体键无反应：检查设置以及其他程序是否占用全局媒体键。托盘与窗口按钮仍可使用。
 - 没有下载按钮：当前来源不允许下载或未返回可识别许可，这是权限限制，不是功能故障。
 

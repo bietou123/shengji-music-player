@@ -220,13 +220,21 @@ async function layout(): Promise<unknown> {
       const { x, y, width, height, right, bottom } = element.getBoundingClientRect();
       return { x, y, width, height, right, bottom, scrollWidth: element.scrollWidth, clientWidth: element.clientWidth };
     });
-    return { width: innerWidth, height: innerHeight, main, player, sidebar, header };
+    const queueElement = document.querySelector<HTMLElement>('.queue-panel:not([aria-hidden="true"])');
+    const queueBounds = queueElement?.getBoundingClientRect();
+    const queue = queueBounds ? { x: queueBounds.x, y: queueBounds.y, right: queueBounds.right, bottom: queueBounds.bottom, width: queueBounds.width, height: queueBounds.height } : null;
+    return { width: innerWidth, height: innerHeight, main, player, sidebar, header, queue };
   });
   assert.ok(result.main.bottom <= result.player.y + 1, 'Content overlaps the player');
   assert.ok(result.sidebar.bottom <= result.player.y + 1, 'Navigation overlaps the player');
   assert.ok(result.main.y >= result.header.bottom - 1, 'Content overlaps the titlebar');
   assert.ok(result.player.right <= result.width + 1, 'Player extends outside the window');
   assert.ok(result.main.scrollWidth <= result.main.clientWidth + 1, 'Music content overflows horizontally');
+  if (result.queue) {
+    assert.ok(Math.abs(result.queue.y - result.header.bottom) <= 1, 'Queue starts below or overlaps the titlebar');
+    assert.ok(Math.abs(result.queue.bottom - result.player.y) <= 1, 'Queue does not meet the player boundary');
+    assert.ok(result.queue.right <= result.width + 1 && result.queue.x >= 0, 'Queue extends outside the window');
+  }
   return result;
 }
 
@@ -687,6 +695,10 @@ try {
         download, traversal, queue, playlist,
         nodeAbsent: typeof (window as unknown as { require?: unknown }).require === 'undefined',
         effects: await window.shengji.saveAudioEffects({ enabled: true, preset: 'custom', bands: [100], width: 10, compressor: false, visualizer: true })
+          .then(() => false, () => true),
+        glassSetting: await window.shengji.saveSettings({ ...snapshot.settings, glassEffects: 'yes' as unknown as boolean })
+          .then(() => false, () => true),
+        motionSetting: await window.shengji.saveSettings({ ...snapshot.settings, motionEffects: null as unknown as boolean })
           .then(() => false, () => true),
       };
     }, localId);

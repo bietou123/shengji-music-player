@@ -10,6 +10,7 @@ import { createPortal } from "react-dom";
 import {
   ArrowDownToLine,
   ArrowUpRight,
+  AudioLines,
   Check,
   Disc3,
   FolderOpen,
@@ -36,6 +37,7 @@ import type { Track, TrackGroup } from "../shared/types";
 import { api } from "./api";
 import { act, useApp } from "./store";
 import { player, usePlayer } from "./player";
+import { Presence, useLeaving, usePresence } from "./Presence";
 
 interface IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   icon: LucideIcon;
@@ -57,7 +59,7 @@ export function IconButton({
       aria-label={label}
       {...props}
     >
-      <Icon size={18} strokeWidth={1.8} />
+      <Icon key={label} className="control-glyph" size={18} strokeWidth={1.8} />
     </button>
   );
 }
@@ -98,6 +100,7 @@ export function Cover({
   eager?: boolean;
 }) {
   const [failed, setFailed] = useState(false);
+  const [loadedSource, setLoadedSource] = useState('');
   useEffect(() => setFailed(false), [track?.artwork]);
   return (
     <div
@@ -110,6 +113,8 @@ export function Cover({
           alt={track.album || track.title}
           loading={eager ? "eager" : "lazy"}
           referrerPolicy="no-referrer"
+          data-loaded={loadedSource === track.artwork}
+          onLoad={() => setLoadedSource(track.artwork!)}
           onError={() => setFailed(true)}
         />
       ) : (
@@ -174,7 +179,11 @@ export function Modal({
   className?: string;
 }) {
   const panel = useRef<HTMLDivElement>(null);
+  const leaving = useLeaving();
+  const close = useRef(onClose);
+  close.current = onClose;
   useEffect(() => {
+    if (leaving) return;
     const previous = document.activeElement as HTMLElement | null;
     const focusable = () =>
       Array.from(
@@ -188,7 +197,7 @@ export function Modal({
     if (!panel.current?.contains(document.activeElement))
       focusable()[0]?.focus();
     const listener = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") close.current();
       if (event.key !== "Tab") return;
       const elements = focusable();
       const first = elements[0],
@@ -206,10 +215,11 @@ export function Modal({
       document.removeEventListener("keydown", listener);
       previous?.focus();
     };
-  }, [onClose]);
+  }, [leaving]);
   return createPortal(
     <div
       className="modal-backdrop"
+      data-state={leaving ? 'closing' : 'open'}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
@@ -219,7 +229,10 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className={`modal ${className}`}
+        className={`modal glass-surface ${className}`}
+        data-glass-surface="modal"
+        data-state={leaving ? 'closing' : 'open'}
+        inert={leaving}
       >
         <div className="modal-header">
           <h2>{title}</h2>
@@ -280,6 +293,7 @@ export function Dropdown({
   icon?: LucideIcon;
 }) {
   const [open, setOpen] = useState(false);
+  const mounted = usePresence(open);
   const [position, setPosition] = useState({ top: 0, left: 0 });
   const anchor = useRef<HTMLSpanElement>(null);
   const menu = useRef<HTMLDivElement>(null);
@@ -322,10 +336,12 @@ export function Dropdown({
     };
     document.addEventListener("pointerdown", outside);
     document.addEventListener("keydown", keyboard);
-    window.addEventListener("resize", () => setOpen(false), { once: true });
+    const resize = () => setOpen(false);
+    window.addEventListener("resize", resize);
     return () => {
       document.removeEventListener("pointerdown", outside);
       document.removeEventListener("keydown", keyboard);
+      window.removeEventListener("resize", resize);
     };
   }, [open]);
   return (
@@ -340,12 +356,16 @@ export function Dropdown({
         aria-expanded={open}
         onClick={() => setOpen(!open)}
       />
-      {open &&
+      {mounted &&
         createPortal(
           <div
             ref={menu}
             role="menu"
-            className="dropdown-menu"
+            className="dropdown-menu glass-surface"
+            data-glass-surface="menu"
+            data-state={open ? 'open' : 'closing'}
+            aria-hidden={!open}
+            inert={!open}
             style={position}
             onClick={() => setOpen(false)}
           >
@@ -613,11 +633,7 @@ export function TrackTable({
               <div className="track-number">
                 <span>
                   {active && status === "playing" ? (
-                    <span className="equalizer">
-                      <i />
-                      <i />
-                      <i />
-                    </span>
+                    <AudioLines size={15} aria-label="正在播放" />
                   ) : (
                     String(index + 1).padStart(2, "0")
                   )}
@@ -773,7 +789,7 @@ export function TrackTable({
           );
         })}
       </div>
-      {remove && (
+      <Presence visible={Boolean(remove)}>{remove && (
         <ConfirmModal
           title="移除本地音乐"
           message={`从资料库移除「${remove.title}」？原始音频文件不会被删除。`}
@@ -786,8 +802,8 @@ export function TrackTable({
           }}
           confirm="移除"
         />
-      )}
-      {alternatives && (
+      )}</Presence>
+      <Presence visible={Boolean(alternatives)}>{alternatives && (
         <Modal title="选择音源" onClose={() => setAlternatives(null)}>
           <div className="source-picker">
             {alternatives.alternatives.map((track) => (
@@ -814,7 +830,7 @@ export function TrackTable({
             ))}
           </div>
         </Modal>
-      )}
+      )}</Presence>
     </>
   );
 }

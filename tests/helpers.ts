@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Settings, Track } from '../shared/types';
 
-export const defaults: Settings = { theme: 'light', enabledSources: ['netease', 'itunes'], downloadDir: path.resolve('test-artifacts/downloads'), closeToTray: false, mediaKeys: false };
+export const defaults: Settings = { theme: 'light', enabledSources: ['netease', 'itunes'], downloadDir: path.resolve('test-artifacts/downloads'), closeToTray: false, mediaKeys: false, glassEffects: true, motionEffects: true };
 export const track = (id: string, overrides: Partial<Track> = {}): Track => ({ id, source: 'local', sourceId: id.replace('local:', ''), title: 'Living', artist: 'Florian Bur', album: 'Tunes of Fantasy', duration: 129, availability: 'full', downloadable: false, ...overrides });
 
 export async function tempDir(label: string): Promise<string> {
@@ -11,7 +11,7 @@ export async function tempDir(label: string): Promise<string> {
   return mkdtemp(path.join(root, `${label}-`));
 }
 
-export async function writeWav(file: string, seconds = 2, tagged = false, amplitude = 0.12): Promise<void> {
+export async function writeWav(file: string, seconds = 2, tagged = false, amplitude = 0.12, artwork?: Buffer): Promise<void> {
   const samples = Buffer.alloc(16000 * 2 * seconds);
   for (let i = 0; i < samples.length / 2; i++) {
     const time = i / 16000;
@@ -30,7 +30,7 @@ export async function writeWav(file: string, seconds = 2, tagged = false, amplit
       return Buffer.concat([frameHeader, value]);
     };
     const text = (value: string) => Buffer.concat([Buffer.from([0]), Buffer.from(value)]);
-    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==', 'base64');
+    const png = artwork ?? Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==', 'base64');
     const frames = Buffer.concat([frame('TIT2', text('Tagged song')), frame('TPE1', text('Test artist')), frame('TALB', text('Test album')), frame('APIC', Buffer.concat([Buffer.from([0]), Buffer.from('image/png\0'), Buffer.from([3, 0]), png]))]);
     const id3 = Buffer.alloc(10); id3.write('ID3'); id3[3] = 3;
     for (let i = 0; i < 4; i++) id3[6 + i] = frames.length >> (7 * (3 - i)) & 0x7f;

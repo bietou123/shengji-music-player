@@ -34,6 +34,7 @@ import type { SearchKind, Settings, SourceId, Track } from "../shared/types";
 import { api } from "./api";
 import { act, useApp, type SearchStatus } from "./store";
 import { player } from "./player";
+import { Presence } from "./Presence";
 import {
   Button,
   ConfirmModal,
@@ -432,7 +433,7 @@ export function SearchView({
         </>
       ) : (
         <>
-          <div className="list-toolbar">
+          <div className="list-toolbar glass-surface search-toolbar" data-glass-surface="tools">
             <label className="select-wrap">
               <select
                 aria-label="音源筛选"
@@ -864,14 +865,14 @@ export function PlaylistView({
         }}
         emptyTitle="歌单里还没有音乐"
       />
-      {rename && (
+      <Presence visible={rename}>{rename && (
         <PlaylistNameModal
           id={id}
           initial={playlist.name}
           onClose={() => setRename(false)}
         />
-      )}
-      {remove && (
+      )}</Presence>
+      <Presence visible={remove}>{remove && (
         <ConfirmModal
           title="删除歌单"
           message={`删除「${playlist.name}」？音频文件和收藏不会被删除。`}
@@ -882,7 +883,7 @@ export function PlaylistView({
             useApp.setState({ view: "playlists" });
           }}
         />
-      )}
+      )}</Presence>
     </>
   );
 }
@@ -997,6 +998,14 @@ export function SettingsView() {
               </button>
             ))}
           </div>
+        </div>
+        <div className="setting-row">
+          <span>玻璃效果</span>
+          <Switch checked={settings.glassEffects} disabled={busy} label="玻璃效果" onChange={(glassEffects) => { void save({ glassEffects }); }} />
+        </div>
+        <div className="setting-row">
+          <span>界面动画</span>
+          <Switch checked={settings.motionEffects} disabled={busy} label="界面动画" onChange={(motionEffects) => { void save({ motionEffects }); }} />
         </div>
       </section>
       <section className="settings-section">

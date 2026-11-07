@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { player, usePlayer } from './player';
+import { visualFrames } from './visual-runtime';
 
 export function Spectrum({ compact = false }: { compact?: boolean }) {
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -13,20 +14,20 @@ export function Spectrum({ compact = false }: { compact?: boolean }) {
     const element = canvas.current;
     const context = element?.getContext('2d');
     if (!element || !context) return;
-    const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
-    let frame = 0;
     let lastDraw = 0;
-    let disposed = false;
+    let intersecting = true;
     let colors = getComputedStyle(element);
     const running = status === 'playing' && enabled;
     const bars = compact ? 10 : 28;
     const paint = (time = 0) => {
-      if (disposed) return;
-      if (time && time - lastDraw < 32) return;
-      lastDraw = time;
       const width = element.clientWidth;
       const height = element.clientHeight;
-      if (!width || !height) return;
+      const visible = intersecting && width > 0 && height > 0 && !element.closest('[inert]') && getComputedStyle(element).visibility !== 'hidden';
+      const continuous = visible && running && visualFrames.motion;
+      element.dataset.active = String(continuous);
+      if (!visible) return false;
+      if (time && time - lastDraw < 32) return continuous;
+      lastDraw = time;
       const ratio = Math.min(2, devicePixelRatio || 1);
       if (element.width !== Math.round(width * ratio) || element.height !== Math.round(height * ratio)) {
         element.width = Math.round(width * ratio);
@@ -70,28 +71,31 @@ export function Spectrum({ compact = false }: { compact?: boolean }) {
         context.fillRect(index * (barWidth + gap), height - barHeight, barWidth, barHeight);
       }
       context.globalAlpha = 1;
+      return continuous;
     };
-    const schedule = () => {
-      if (!frame && !disposed && running && !motion.matches && element.clientWidth > 0) frame = requestAnimationFrame(tick);
-    };
-    const tick = (time: number) => { frame = 0; paint(time); schedule(); };
-    const repaint = () => { paint(); schedule(); };
+    const task = visualFrames.add(paint);
+    const repaint = () => { lastDraw = 0; task.request(); };
     const palette = () => { colors = getComputedStyle(element); repaint(); };
     const resize = new ResizeObserver(repaint);
     resize.observe(element);
     const theme = new MutationObserver(palette);
     theme.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
-    const changeMotion = () => { cancelAnimationFrame(frame); frame = 0; repaint(); };
-    motion.addEventListener('change', changeMotion);
+    const intersection = new IntersectionObserver(([entry]) => { intersecting = entry.isIntersecting; repaint(); });
+    intersection.observe(element);
+    const unsubscribe = visualFrames.subscribe(() => {
+      if (!visualFrames.visible) element.dataset.active = 'false';
+      repaint();
+    });
     repaint();
-    const timer = setTimeout(() => { if (motion.matches) paint(); }, 350);
+    const timer = setTimeout(() => { if (!visualFrames.motion) repaint(); }, 350);
     return () => {
-      disposed = true;
       clearTimeout(timer);
-      cancelAnimationFrame(frame);
+      task.dispose();
+      unsubscribe();
       resize.disconnect();
       theme.disconnect();
-      motion.removeEventListener('change', changeMotion);
+      intersection.disconnect();
+      element.dataset.active = 'false';
     };
   }, [status, enabled, compact, trackId]);
   return <canvas ref={canvas} className={`audio-spectrum ${compact ? 'compact' : ''}`} role="img" aria-label="音频频谱" data-playing={status === 'playing' && enabled} />;

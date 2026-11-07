@@ -1,6 +1,6 @@
 {
   "name": "shengji",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "description": "Shengji desktop music player",
   "author": "bietou123",
@@ -14,6 +14,7 @@
     "test": "tsx --test tests/*.test.ts",
     "test:online": "tsx tests/online.smoke.ts",
     "test:e2e": "tsx tests/e2e.ts",
+    "test:glass": "tsx tests/glass.e2e.ts",
     "test:portable": "tsx tests/portable.smoke.ts",
     "icon": "node scripts/icon.mjs",
     "package": "npm run build && npm run icon && electron-builder --win nsis portable --x64",
@@ -28,6 +29,7 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "sql.js": "^1.13.0",
+    "three": "^0.187.0",
     "zod": "^4.1.12",
     "zustand": "^5.0.8"
   },
@@ -38,6 +40,7 @@
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
     "@types/sql.js": "^1.4.9",
+    "@types/three": "^0.187.0",
     "@vitejs/plugin-react": "^5.1.0",
     "electron": "45.2.3",
     "electron-builder": "^26.0.12",

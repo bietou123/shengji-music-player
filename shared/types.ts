@@ -55,6 +55,13 @@ export interface Settings {
   downloadDir: string;
   closeToTray: boolean;
   mediaKeys: boolean;
+  glassEffects: boolean;
+  motionEffects: boolean;
+}
+export interface VisualState {
+  visible: boolean;
+  hardwareAccelerated: boolean;
+  settings: Pick<Settings, 'theme' | 'glassEffects' | 'motionEffects'>;
 }
 export interface PlaybackState {
   queue: string[];
@@ -137,6 +144,8 @@ export interface ShengjiAPI {
   revealFile(id: string): Promise<void>;
   revealDownload(id: string): Promise<void>;
   windowAction(action: 'minimize' | 'maximize' | 'close' | 'mini' | 'main' | 'mini-close'): Promise<void>;
+  visualState(): Promise<VisualState>;
+  onVisualState(callback: (state: VisualState) => void): () => void;
   filePath(file: File): string;
   playerSummary(summary: PlayerSummary): void;
   playbackCheckpoint(state: PlaybackState): void;

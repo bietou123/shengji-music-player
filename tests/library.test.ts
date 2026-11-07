@@ -31,6 +31,34 @@ test('invalid playlist reorder is rejected without losing existing order', async
   assert.deepEqual(db.snapshot().playlists[0].tracks.map((t) => t.id), ['a', 'b']);
   db.removeFromPlaylist(playlist, 'a'); assert.equal(db.snapshot().playlists[0].tracks.length, 1); db.deletePlaylist(playlist); assert.equal(db.snapshot().playlists.length, 0); db.close();
 });
+
+test('legacy settings acquire glass defaults without changing saved preferences', async () => {
+  const root = await tempDir('legacy-appearance');
+  const file = path.join(root, 'library.sqlite');
+  let db = await LibraryDatabase.open(file, defaults, true);
+  db.setValue('settings', { theme: 'dark', enabledSources: ['itunes'], downloadDir: defaults.downloadDir, closeToTray: false, mediaKeys: false });
+  db.close();
+  db = await LibraryDatabase.open(file, defaults, true);
+  assert.deepEqual(db.settings(), { ...defaults, theme: 'dark', enabledSources: ['itunes'], glassEffects: true, motionEffects: true });
+  db.close();
+});
+
+test('glass and motion settings persist independently through SQLite reopen', async () => {
+  const root = await tempDir('appearance-restore');
+  const file = path.join(root, 'library.sqlite');
+  let db = await LibraryDatabase.open(file, defaults, true);
+  db.setValue('settings', { ...defaults, glassEffects: false, motionEffects: true });
+  db.close();
+  db = await LibraryDatabase.open(file, defaults, true);
+  assert.equal(db.settings().glassEffects, false);
+  assert.equal(db.settings().motionEffects, true);
+  db.setValue('settings', { ...db.settings(), glassEffects: true, motionEffects: false });
+  db.close();
+  db = await LibraryDatabase.open(file, defaults, true);
+  assert.equal(db.settings().glassEffects, true);
+  assert.equal(db.settings().motionEffects, false);
+  db.close();
+});
 test('removing local library entries cascades but never deletes the audio file', async () => {
   const root = await tempDir('remove'); const file = path.join(root, 'audio.wav'); await writeWav(file);
   const db = await LibraryDatabase.open(path.join(root, 'db.sqlite'), defaults); const a = track('local:a', { filePath: file });

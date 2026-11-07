@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   AlertCircle,
   ArrowDown,
@@ -51,6 +51,9 @@ import { act, useApp, type View } from "./store";
 import { player, usePlayer } from "./player";
 import { AudioEffectsModal } from "./AudioEffects";
 import { Spectrum } from "./Spectrum";
+import { ArtworkBackdrop } from "./Glass";
+import { Presence } from "./Presence";
+import { motionAllowed } from "./visual-runtime";
 import {
   AddPlaylistModal,
   Button,
@@ -71,17 +74,6 @@ import {
   type AlbumGroup,
 } from "./views";
 
-export function applyTheme(theme: "light" | "dark" | "system"): () => void {
-  const query = window.matchMedia("(prefers-color-scheme: dark)");
-  const update = () => {
-    document.documentElement.dataset.theme =
-      theme === "system" ? (query.matches ? "dark" : "light") : theme;
-  };
-  update();
-  query.addEventListener("change", update);
-  return () => query.removeEventListener("change", update);
-}
-
 const navigation: { view: View; name: string; icon: LucideIcon }[] = [
   { view: "discover", name: "发现音乐", icon: Compass },
   { view: "search", name: "搜索", icon: Search },
@@ -93,14 +85,41 @@ const navigation: { view: View; name: string; icon: LucideIcon }[] = [
 
 function Sidebar({ onCreate }: { onCreate(): void }) {
   const { view, snapshot, importing, importMusic } = useApp();
+  const sidebar = useRef<HTMLElement>(null);
+  const indicator = useRef<HTMLDivElement>(null);
+  const placed = useRef(false);
+  useLayoutEffect(() => {
+    const host = sidebar.current, glass = indicator.current;
+    if (!host || !glass) return;
+    const update = () => {
+      const selected = [...host.querySelectorAll<HTMLElement>('[data-nav-view]')].find((button) => button.dataset.navView === view);
+      if (!selected) { glass.style.opacity = '0'; return; }
+      const bounds = host.getBoundingClientRect(), rect = selected.getBoundingClientRect();
+      const scrollArea = selected.closest('.sidebar-playlists');
+      const scrollBounds = scrollArea?.getBoundingClientRect();
+      glass.style.opacity = scrollBounds && (rect.top < scrollBounds.top || rect.bottom > scrollBounds.bottom) ? '0' : '1';
+      if (!placed.current) glass.style.transition = 'none';
+      glass.style.width = `${host.clientWidth - 24}px`;
+      glass.style.height = `${rect.height}px`;
+      glass.style.transform = `translate3d(12px, ${rect.top - bounds.top}px, 0)`;
+      if (!placed.current) { glass.getBoundingClientRect(); glass.style.transition = ''; placed.current = true; }
+    };
+    update();
+    const resize = new ResizeObserver(update);
+    resize.observe(host);
+    host.addEventListener('scroll', update, true);
+    return () => { resize.disconnect(); host.removeEventListener('scroll', update, true); };
+  }, [view, snapshot?.playlists.length]);
   return (
-    <aside className="sidebar" aria-label="主导航">
+    <aside ref={sidebar} className="sidebar" aria-label="主导航">
+      <div ref={indicator} className="nav-indicator glass-surface" data-testid="nav-indicator" data-glass-surface="nav" aria-hidden="true" />
       <nav>
         {navigation.map((item, index) => (
           <div key={item.view}>
             {index === 2 && <div className="nav-label">资料库</div>}
             <button
               className={`nav-item ${view === item.view ? "selected" : ""}`}
+              data-nav-view={item.view}
               title={item.name}
               onClick={() => useApp.setState({ view: item.view })}
             >
@@ -117,6 +136,7 @@ function Sidebar({ onCreate }: { onCreate(): void }) {
       <div className="playlist-nav-heading">
         <button
           className={view === "playlists" ? "selected" : ""}
+          data-nav-view="playlists"
           onClick={() => useApp.setState({ view: "playlists" })}
         >
           <ListMusic size={16} />
@@ -130,6 +150,7 @@ function Sidebar({ onCreate }: { onCreate(): void }) {
             key={playlist.id}
             title={playlist.name}
             className={`playlist-nav-item ${view === `playlist:${playlist.id}` ? "selected" : ""}`}
+            data-nav-view={`playlist:${playlist.id}`}
             onClick={() => useApp.setState({ view: `playlist:${playlist.id}` })}
           >
             <Cover track={playlist.tracks[0]} size={26} />
@@ -152,6 +173,7 @@ function Sidebar({ onCreate }: { onCreate(): void }) {
         </button>
         <button
           className={`nav-item ${view === "settings" ? "selected" : ""}`}
+          data-nav-view="settings"
           title="设置"
           onClick={() => useApp.setState({ view: "settings" })}
         >
@@ -204,7 +226,8 @@ function TitleBar({
           />
         </div>
         <form
-          className="global-search"
+          className="global-search glass-surface"
+          data-glass-surface="search"
           onSubmit={(event) => {
             event.preventDefault();
             void search();
@@ -299,7 +322,9 @@ function PlayerBar({ onLyrics, onEffects }: { onLyrics(): void; onEffects(): voi
         ? Volume1
         : Volume2;
   return (
-    <footer className="player-bar" aria-label="播放控制" data-playing={playing}>
+    <>
+    <ArtworkBackdrop artwork={state.current?.artwork} kind="player" />
+    <footer className="player-bar glass-surface" data-glass-surface="player" aria-label="播放控制" data-playing={playing}>
       <div className="now-playing">
         <button
           className="now-art-button"
@@ -307,9 +332,9 @@ function PlayerBar({ onLyrics, onEffects }: { onLyrics(): void; onEffects(): voi
           onClick={onLyrics}
           disabled={!state.current}
         >
-          <Cover track={state.current} size={54} eager />
+          <Cover key={state.current?.id} track={state.current} className="now-cover" size={54} eager />
         </button>
-        <div className="now-meta">
+        <div className="now-meta" key={state.current?.id}>
           <div>
             <strong title={state.current?.title}>
               {state.current?.title ?? "声迹"}
@@ -464,6 +489,7 @@ function PlayerBar({ onLyrics, onEffects }: { onLyrics(): void; onEffects(): voi
         </div>
       )}
     </footer>
+    </>
   );
 }
 
@@ -483,7 +509,7 @@ function Lyrics() {
           container.current.offsetTop -
           container.current.clientHeight / 2 +
           active.clientHeight / 2,
-        behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? "instant" : "smooth",
+        behavior: motionAllowed() ? "smooth" : "instant",
       });
   }, [activeIndex]);
   return (
@@ -529,13 +555,15 @@ function Lyrics() {
 function QueuePanel({
   tab,
   onTab,
+  open,
 }: {
   tab: "queue" | "lyrics";
   onTab(tab: "queue" | "lyrics"): void;
+  open: boolean;
 }) {
   const { queue, current, index, status } = usePlayer();
   return (
-    <aside className="queue-panel" aria-label="播放队列">
+    <aside className="queue-panel" aria-label="播放队列" data-open={open} aria-hidden={!open} inert={!open}>
       <div className="queue-heading">
         <div role="tablist">
           <button
@@ -700,10 +728,6 @@ export function App() {
       useApp.setState({ importProgress: progress }),
     );
   }, []);
-  useEffect(
-    () => applyTheme(snapshot?.settings.theme ?? "light"),
-    [snapshot?.settings.theme],
-  );
   useEffect(() => {
     const smallWindow = window.matchMedia('(max-width: 1180px)');
     const collapse = () => { if (smallWindow.matches) useApp.setState({ queueVisible: false }); };
@@ -848,13 +872,11 @@ export function App() {
       <main className="main-content" key={view}>
         <div className="content-inner">{content}</div>
       </main>
-      {queueVisible && <QueuePanel tab={queueTab} onTab={setQueueTab} />}
+      <QueuePanel tab={queueTab} onTab={setQueueTab} open={queueVisible} />
       <PlayerBar onLyrics={showLyrics} onEffects={() => setEffectsOpen(true)} />
-      {effectsOpen && <AudioEffectsModal onClose={() => setEffectsOpen(false)} />}
-      {create && <PlaylistNameModal onClose={() => setCreate(false)} />}
-      {adding && (
-        <AddPlaylistModal tracks={adding} onClose={() => setAdding(null)} />
-      )}
+      <Presence visible={effectsOpen}><AudioEffectsModal onClose={() => setEffectsOpen(false)} /></Presence>
+      <Presence visible={create}><PlaylistNameModal onClose={() => setCreate(false)} /></Presence>
+      <Presence visible={Boolean(adding)}>{adding && <AddPlaylistModal tracks={adding} onClose={() => setAdding(null)} />}</Presence>
       {toast && (
         <div
           className={`toast ${toast.tone}`}
@@ -903,19 +925,16 @@ export function MiniPlayer() {
     muted: false,
   });
   useEffect(() => {
-    let cleanup: (() => void) | undefined;
-    void api.bootstrap().then((snapshot) => {
-      cleanup = applyTheme(snapshot.settings.theme);
-    });
     const unsubscribe = api.onMiniState(setState);
     api.miniCommand("refresh");
     return () => {
       unsubscribe();
-      cleanup?.();
     };
   }, []);
   return (
-    <div className="mini-player">
+    <div className="mini-player-frame">
+    <ArtworkBackdrop artwork={state.current?.artwork} kind="mini" />
+    <div className="mini-player glass-surface" data-glass-surface="mini">
       <div className="mini-titlebar">
         <span>
           <AudioLines size={13} />
@@ -939,8 +958,8 @@ export function MiniPlayer() {
         </div>
       </div>
       <div className="mini-track">
-        <Cover track={state.current} size={50} eager />
-        <div>
+        <Cover key={state.current?.id} track={state.current} className="now-cover" size={50} eager />
+        <div className="mini-meta" key={state.current?.id}>
           <strong title={state.current?.title}>
             {state.current?.title ?? "未选择音乐"}
           </strong>
@@ -980,6 +999,7 @@ export function MiniPlayer() {
         <progress max={state.duration || 1} value={state.position} />
         <span>{formatTime(state.duration)}</span>
       </div>
+    </div>
     </div>
   );
 }
