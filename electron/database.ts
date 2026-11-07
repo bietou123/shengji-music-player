@@ -3,7 +3,8 @@ import { createRequire } from 'node:module';
 import { mkdirSync, readFileSync, existsSync, writeFileSync, renameSync } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { DownloadRecord, LibrarySnapshot, PlaybackState, Playlist, ScanFolder, Settings, Track } from '../shared/types';
+import type { AudioEffectsSettings, DownloadRecord, LibrarySnapshot, PlaybackState, Playlist, ScanFolder, Settings, Track } from '../shared/types';
+import { DEFAULT_AUDIO_EFFECTS, restoreAudioEffects } from '../shared/audio-effects';
 
 const require = createRequire(import.meta.url);
 let sqlite: Promise<SqlJsStatic> | undefined;
@@ -183,6 +184,7 @@ export class LibraryDatabase {
       settings: this.settings(), playback,
       queueTracks: playback.queue.map((id) => this.getTrack(id)).filter((track): track is Track => Boolean(track)),
       searchHistory: this.getValue<string[]>('searchHistory', []),
+      audioEffects: restoreAudioEffects(this.getValue<AudioEffectsSettings>('audioEffects', DEFAULT_AUDIO_EFFECTS)),
     };
   }
 

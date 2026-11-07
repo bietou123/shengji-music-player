@@ -1,16 +1,19 @@
 import assert from 'node:assert/strict';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
-import { mkdir, mkdtemp, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { extractFile } from '@electron/asar';
 import { chromium, type Browser, type Page } from 'playwright';
 
 const root = path.resolve('.');
+const { version } = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')) as { version: string };
 const artifacts = path.join(root, 'test-artifacts');
 await mkdir(artifacts, { recursive: true });
 const profile = await mkdtemp(path.join(artifacts, 'portable-profile-'));
-const executable = process.env.SHENGJI_PORTABLE_EXECUTABLE || path.join(root, 'release', 'Shengji-1.0.0-x64-portable.exe');
+const executable = process.env.SHENGJI_PORTABLE_EXECUTABLE || path.join(root, 'release', `Shengji-${version}-x64-portable.exe`);
 const living = process.env.SHENGJI_LOCAL_TEST_FILE || path.join(os.homedir(), 'Desktop', 'Florian Bur - Living.mp3');
 const checks: { name: string; status: 'pass' | 'fail'; detail: unknown }[] = [];
 let child: ChildProcess | undefined;
@@ -104,13 +107,18 @@ try {
     assert.ok((await stat(living)).size > 1000);
     await launch(true);
     assert.match(page!.url(), /\/resources\/app\.asar\/dist\/index\.html$/);
+    const archive = path.dirname(path.dirname(fileURLToPath(page!.url())));
+    const bundled = JSON.parse(extractFile(archive, 'package.json').toString('utf8')) as { version: string };
+    assert.equal(bundled.version, version, 'The portable runtime must contain the source release version');
     const snapshot = await page!.evaluate(() => window.shengji.bootstrap());
     const track = snapshot.localTracks.find((track) => track.filePath === living);
     assert.ok(track);
     assert.equal(track.title, 'Living');
     localId = track.id;
     assert.ok((await stat(path.join(profile, 'library.sqlite'))).size > 1000);
-    return { title: track.title, bundledAsar: true, sqliteLoaded: true };
+    await page!.getByRole('button', { name: '设置', exact: true }).click();
+    assert.equal(await page!.locator('.settings-footer span').nth(1).innerText(), version, 'Portable settings must show the bundled runtime version');
+    return { title: track.title, version: bundled.version, displayedVersion: version, bundledAsar: true, sqliteLoaded: true };
   });
 
   await check('Portable local audio actually decodes, pauses and resumes', async () => {

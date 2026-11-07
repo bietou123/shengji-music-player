@@ -35,6 +35,7 @@ export class LocalLibrary {
       id, source: 'local', sourceId: id.slice(6), title: metadata.common.title || fallback.slice(1).join(' - ') || base,
       artist: metadata.common.artist || fallback[0] || '未知歌手', album: metadata.common.album || '本地音乐', duration: metadata.format.duration,
       artwork, filePath: resolved, format: path.extname(resolved).slice(1).toUpperCase(), bitrate, sampleRate: metadata.format.sampleRate,
+      genres: metadata.common.genre,
       quality: metadata.format.lossless ? '无损' : bitrate ? `${Math.round(bitrate / 1000)} kbps` : metadata.format.codec,
       availability: 'full', downloadable: false, addedAt: this.database.getTrack(id)?.addedAt ?? Date.now(),
     };

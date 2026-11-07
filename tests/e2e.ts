@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, stat, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { _electron, type ElectronApplication, type Locator, type Page } from 'playwright';
-import type { LibrarySnapshot, PlaybackState } from '../shared/types';
+import type { AudioEffectsSettings, LibrarySnapshot, PlaybackState } from '../shared/types';
 import { writeWav } from './helpers';
 
 const root = path.resolve('.');
+const { version } = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')) as { version: string };
 const artifacts = path.join(root, 'test-artifacts');
 const screenshots = path.join(artifacts, 'screenshots');
 await mkdir(screenshots, { recursive: true });
@@ -100,6 +101,90 @@ async function dragRange(control: Locator, fraction: number): Promise<void> {
   await page.mouse.up();
 }
 
+async function spectrum(control = page.locator('.player-tools .audio-spectrum')) {
+  return control.evaluate((element) => {
+    const canvas = element as HTMLCanvasElement;
+    const pixels = canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height).data;
+    let upperPixels = 0;
+    for (let y = 0; y < canvas.height - 6; y++) {
+      for (let x = 0; x < canvas.width; x++) if (pixels[(y * canvas.width + x) * 4 + 3] > 0) upperPixels++;
+    }
+    return {
+      frame: Number(canvas.dataset.frame ?? 0), rms: Number(canvas.dataset.rms ?? 0),
+      peakHz: Number(canvas.dataset.peakHz ?? 0), peakDb: Number(canvas.dataset.peakDb ?? -100),
+      compressionDb: Number(canvas.dataset.compressionDb ?? 0),
+      upperPixels, width: canvas.width, height: canvas.height,
+    };
+  });
+}
+
+async function signal(selector = '.player-tools .audio-spectrum'): Promise<void> {
+  await page.waitForFunction((selector) => {
+    const canvas = document.querySelector<HTMLCanvasElement>(selector);
+    return Number(canvas?.dataset.rms ?? 0) > 0.0001 && Number(canvas?.dataset.frame ?? 0) > 2;
+  }, selector);
+}
+
+async function effectsLayout(): Promise<unknown> {
+  await page.waitForFunction(() => !document.querySelector('.effects-modal')!.getAnimations().some((animation) => animation.playState === 'running'));
+  const result = await page.evaluate(() => {
+    const panel = document.querySelector<HTMLElement>('.effects-modal')!;
+    const { x, y, width, height, right, bottom } = panel.getBoundingClientRect();
+    return {
+      width: innerWidth, height: innerHeight, panel: { x, y, width, height, right, bottom },
+      scrollWidth: panel.scrollWidth, clientWidth: panel.clientWidth,
+      scrollHeight: panel.scrollHeight, clientHeight: panel.clientHeight,
+      bands: [...document.querySelectorAll('.eq-band')].map((element) => {
+        const { x, y, width, height, right, bottom } = element.getBoundingClientRect();
+        return { x, y, width, height, right, bottom };
+      }),
+      sliders: [...document.querySelectorAll('.eq-slider')].map((element) => {
+        const { x, y, width, height, right, bottom } = element.getBoundingClientRect();
+        return { x, y, width, height, right, bottom };
+      }),
+    };
+  });
+  assert.ok(result.panel.y >= 0 && result.panel.bottom <= result.height, 'Effects dialog extends outside the window');
+  assert.ok(result.scrollWidth <= result.clientWidth + 1, 'Effects dialog overflows horizontally');
+  assert.ok(result.scrollHeight <= result.clientHeight + 1, 'Effects controls need unexpected vertical scrolling');
+  for (let i = 0; i < result.bands.length; i++) {
+    const band = result.bands[i], slider = result.sliders[i];
+    assert.ok(slider.x >= band.x && slider.right <= band.right + 1, 'EQ slider is misaligned');
+    if (i) assert.ok(result.bands[i - 1].right <= band.x + 1, 'EQ bands overlap');
+  }
+  return { width: result.width, height: result.height, panel: result.panel, sliderHeight: result.sliders[0].height };
+}
+
+async function lyricsLayout(): Promise<unknown> {
+  await page.waitForFunction(() => !document.querySelector('.lyric-artwork')!.getAnimations().some((animation) => animation.playState === 'running'));
+  const result = await page.evaluate(() => {
+    const [artwork, view, heading, canvas, player] = [
+      '.lyric-artwork', '.instrumental-view', '.instrumental-view h3', '.instrumental-view canvas', '.player-bar',
+    ].map((selector) => {
+      const { y, bottom, width, height } = document.querySelector(selector)!.getBoundingClientRect();
+      return { y, bottom, width, height };
+    });
+    const content = document.querySelector<HTMLElement>('.lyrics-content')!;
+    const state = document.querySelector<HTMLElement>('.instrumental-view')!;
+    return {
+      artwork, view, heading, canvas, player, overflow: content.scrollHeight - content.clientHeight,
+      stateOverflow: state.scrollHeight - state.clientHeight,
+      controls: [...state.querySelectorAll('.button, .lyrics-origin, .spectrum-scale')].map((element) => {
+        const { y, bottom } = element.getBoundingClientRect();
+        return { y, bottom };
+      }),
+    };
+  });
+  assert.ok(result.artwork.bottom <= result.view.y + 1, 'Artwork overlaps the lyrics state');
+  assert.ok(result.heading.bottom <= result.canvas.y + 1, 'Lyrics state overlaps the spectrum');
+  assert.ok(result.canvas.bottom <= result.view.bottom + 1, 'Spectrum extends outside the lyrics view');
+  assert.ok(result.view.bottom <= result.player.y + 1, 'Lyrics overlap the player');
+  assert.ok(result.overflow <= 1, 'Lyrics panel overflows vertically');
+  assert.ok(result.stateOverflow <= 1, 'Lyrics state clips its controls');
+  assert.ok(result.controls.every((control) => control.y >= result.view.y && control.bottom <= result.view.bottom + 1), 'Lyrics controls extend outside the panel');
+  return result;
+}
+
 async function localView(): Promise<void> {
   await page.getByRole('button', { name: '本地音乐', exact: true }).click();
   await page.locator(`[data-track-id="${localId}"]`).waitFor();
@@ -148,10 +233,11 @@ async function layout(): Promise<unknown> {
 try {
   await check('Real desktop MP3 import and secure Electron window', async () => {
     assert.ok((await stat(living)).size > 1000, 'Desktop MP3 is missing');
-    await writeWav(fixture, 40, true);
+    await writeWav(fixture, 40, true, 0.6);
     await writeFile(fixture.replace(/\.wav$/, '.lrc'), '[00:00.00]First line\n[00:05.00]Second line\n');
     await launch(true);
-    const runtime = await application!.evaluate(({ app }) => ({ packaged: app.isPackaged, appPath: app.getAppPath() }));
+    const runtime = await application!.evaluate(({ app }) => ({ packaged: app.isPackaged, appPath: app.getAppPath(), version: app.getVersion() }));
+    assert.equal(runtime.version, version, 'The tested runtime must match the source release version');
     assert.equal(runtime.packaged, Boolean(executable));
     if (executable) assert.match(runtime.appPath, /app\.asar$/);
     const snapshot = await bootstrap();
@@ -175,7 +261,7 @@ try {
     assert.equal(renderer.nodeAbsent, true);
     assert.equal(renderer.bridgeFrozen, true);
     await page.waitForFunction(() => [...document.querySelectorAll<HTMLImageElement>('.track-table img')].some((image) => image.naturalWidth > 0));
-    return { title: local.title, artist: local.artist, format: local.format, duration: local.duration, quality: local.quality, packaged: runtime.packaged, ...renderer };
+    return { title: local.title, artist: local.artist, format: local.format, duration: local.duration, quality: local.quality, packaged: runtime.packaged, version: runtime.version, ...renderer };
   });
 
   await check('Local playback actually advances and pause/resume works', async () => {
@@ -213,6 +299,123 @@ try {
     await playing();
     await page.getByRole('button', { name: '暂停', exact: true }).click();
     return { next: 'Tagged song', previous: 'Living', lyricSeek: 5 };
+  });
+
+  await check('Actual FFT detects the fixture tone; pause, resume and reduced motion stop animation correctly', async () => {
+    // Keep the OS output muted via --mute-audio, but feed the analyser real samples.
+    if ((await audio()).muted) await page.getByRole('button', { name: '取消静音', exact: true }).click();
+    await page.locator(`[data-track-id="${fixtureId}"]`).getByRole('button', { name: '播放 Tagged song', exact: true }).click();
+    await playing();
+    await signal();
+    const first = await spectrum();
+    assert.ok(Math.abs(first.peakHz - 440) < 35, `Unexpected FFT peak: ${first.peakHz}`);
+    assert.ok(first.rms > 0.005 && first.upperPixels > 20, 'FFT must contain real nonblank audio pixels');
+    await page.waitForTimeout(550);
+    const moving = await spectrum();
+    assert.ok(moving.frame > first.frame + 2);
+    assert.ok(moving.frame - first.frame < 24, 'Spectrum scheduled duplicate animation loops');
+    await page.getByRole('button', { name: '暂停', exact: true }).click();
+    await page.waitForTimeout(100);
+    const paused = await spectrum();
+    await page.waitForTimeout(550);
+    assert.equal((await spectrum()).frame, paused.frame);
+    await page.getByRole('button', { name: '播放', exact: true }).click();
+    await playing();
+    await page.waitForTimeout(450);
+    assert.ok((await spectrum()).frame > paused.frame);
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await page.waitForTimeout(500);
+    const reduced = await spectrum();
+    await page.waitForTimeout(500);
+    assert.equal((await spectrum()).frame, reduced.frame);
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    await page.getByRole('button', { name: '音效', exact: true }).click();
+    await page.getByRole('switch', { name: '频谱动画', exact: true }).setChecked(false);
+    await page.waitForTimeout(100);
+    const disabled = await spectrum();
+    assert.equal(disabled.rms, 0);
+    await page.waitForTimeout(450);
+    assert.equal((await spectrum()).frame, disabled.frame);
+    await page.getByRole('switch', { name: '频谱动画', exact: true }).setChecked(true);
+    await signal();
+    await page.getByRole('button', { name: '关闭对话框', exact: true }).click();
+    await page.getByRole('button', { name: '暂停', exact: true }).click();
+    return { peakHz: first.peakHz, rms: first.rms, upperPixels: first.upperPixels, pauseFreezes: true, reducedMotion: true, visualizerToggle: true };
+  });
+
+  await check('Ten-band EQ and compression measurably process audio; bypass, width and presets work', async () => {
+    await page.getByRole('button', { name: '播放', exact: true }).click();
+    await playing();
+    await page.getByRole('button', { name: '音效', exact: true }).click();
+    const modal = page.getByRole('dialog', { name: '音效', exact: true });
+    const preset = modal.getByRole('combobox', { name: '音色预设', exact: true });
+    assert.equal(await preset.isDisabled(), true);
+    await modal.getByRole('switch', { name: '启用音效', exact: true }).setChecked(true);
+    await preset.selectOption('flat');
+    await signal('.effects-monitor canvas');
+    await page.waitForTimeout(650);
+    const baseline = await spectrum(modal.locator('canvas'));
+    assert.equal(await modal.getByRole('slider', { name: /^均衡器 / }).count(), 10);
+    await modal.getByRole('slider', { name: '均衡器 500 Hz', exact: true }).press('Home');
+    assert.equal(await preset.inputValue(), 'custom');
+    assert.equal(await modal.getByRole('slider', { name: '均衡器 500 Hz', exact: true }).inputValue(), '-12');
+    await page.waitForTimeout(850);
+    const cut = await spectrum(modal.locator('canvas'));
+    assert.ok(cut.peakDb < baseline.peakDb - 6, 'EQ control did not attenuate the actual 440 Hz signal');
+    assert.ok(cut.rms < baseline.rms * 0.65);
+    await modal.getByRole('switch', { name: '启用音效', exact: true }).setChecked(false);
+    await page.waitForTimeout(700);
+    const bypass = await spectrum(modal.locator('canvas'));
+    assert.ok(Math.abs(bypass.peakDb - baseline.peakDb) < 1.5, 'Bypass did not restore unprocessed audio');
+    await modal.getByRole('switch', { name: '启用音效', exact: true }).setChecked(true);
+    await preset.selectOption('flat');
+    await modal.getByRole('switch', { name: '动态压缩', exact: true }).setChecked(true);
+    await page.waitForTimeout(900);
+    const compressed = await spectrum(modal.locator('canvas'));
+    // Web Audio includes makeup gain; verify native reduction and a changed output.
+    assert.ok(compressed.compressionDb < -0.1, `Compressor has no gain reduction: ${JSON.stringify(compressed)}`);
+    assert.ok(Math.abs(compressed.rms / baseline.rms - 1) > 0.03, `Compressor did not change the output: ${JSON.stringify({ baseline, compressed })}`);
+    await modal.getByRole('switch', { name: '动态压缩', exact: true }).setChecked(false);
+    await modal.getByRole('slider', { name: '立体声宽度', exact: true }).press('Home');
+    assert.equal(await modal.getByRole('slider', { name: '立体声宽度', exact: true }).inputValue(), '0');
+    await modal.getByRole('slider', { name: '立体声宽度', exact: true }).press('End');
+    assert.equal(await modal.getByRole('slider', { name: '立体声宽度', exact: true }).inputValue(), '1.5');
+    assert.match(await modal.locator('.headroom-label').innerText(), /-4\.0/);
+    await preset.selectOption('night');
+    assert.equal(await modal.getByRole('switch', { name: '动态压缩', exact: true }).isChecked(), true);
+    assert.equal(await modal.getByRole('switch', { name: '动态压缩', exact: true }).isDisabled(), true);
+    await modal.getByRole('button', { name: '重置音效', exact: true }).click();
+    assert.equal(await preset.inputValue(), 'auto');
+    assert.equal(await modal.getByRole('slider', { name: '立体声宽度', exact: true }).inputValue(), '1');
+    assert.equal(await modal.getByRole('switch', { name: '动态压缩', exact: true }).isChecked(), false);
+    const desktop = await effectsLayout();
+    await page.screenshot({ path: path.join(screenshots, 'effects-light-desktop.png') });
+    await modal.getByRole('button', { name: '关闭对话框', exact: true }).click();
+    await page.getByRole('button', { name: '暂停', exact: true }).click();
+    return { baselineRms: baseline.rms, eqRms: cut.rms, attenuationDb: cut.peakDb - baseline.peakDb, compressionRms: compressed.rms, compressionDb: compressed.compressionDb, bypassRms: bypass.rms, desktop };
+  });
+
+  await check('Living adapts to piano; missing lyrics show genuine spectrum without invented text', async () => {
+    await page.locator(`[data-track-id="${localId}"]`).getByRole('button', { name: '播放 Living', exact: true }).click();
+    await playing();
+    await page.getByRole('button', { name: '音效', exact: true }).click();
+    const modal = page.getByRole('dialog', { name: '音效', exact: true });
+    assert.equal(await modal.getByLabel('当前适配音色', { exact: true }).innerText(), '钢琴');
+    assert.equal(await modal.getByRole('slider', { name: '均衡器 500 Hz', exact: true }).inputValue(), '1.5');
+    await modal.getByRole('switch', { name: '启用音效', exact: true }).setChecked(false);
+    await modal.getByRole('button', { name: '关闭对话框', exact: true }).click();
+    await page.getByRole('button', { name: '歌词', exact: true }).click();
+    await page.getByRole('heading', { name: '暂无歌词', exact: true }).waitFor();
+    assert.equal(await page.locator('.lyric-line').count(), 0);
+    assert.equal(await page.getByRole('button', { name: '匹配在线歌词', exact: true }).count(), 1);
+    await signal('.instrumental-view canvas');
+    const metrics = await spectrum(page.locator('.instrumental-view canvas'));
+    assert.ok(metrics.upperPixels > 20);
+    const desktop = await lyricsLayout();
+    await page.screenshot({ path: path.join(screenshots, 'lyrics-missing-light.png') });
+    await page.getByRole('button', { name: '暂停', exact: true }).click();
+    await page.getByRole('tab', { name: /播放队列/ }).click();
+    return { adaptedPreset: 'piano', inventedLines: 0, rms: metrics.rms, desktop };
   });
 
   await check('Progress drag, volume drag, mute and all four play modes', async () => {
@@ -285,7 +488,7 @@ try {
     await page.locator(`[data-track-id="${fixtureId}"]`).getByRole('button', { name: '播放 Tagged song', exact: true }).click();
     await page.locator('.player-error').waitFor();
     assert.match(await page.locator('.player-error').innerText(), /ENOENT|移动|删除/);
-    await writeWav(fixture, 40, true);
+    await writeWav(fixture, 40, true, 0.6);
     await page.getByRole('button', { name: '重试播放', exact: true }).click();
     await playing();
     await page.getByRole('button', { name: '暂停', exact: true }).click();
@@ -294,6 +497,7 @@ try {
 
   await check('Dark/light themes and unimplemented sources have real settings', async () => {
     await page.getByRole('button', { name: '设置', exact: true }).click();
+    assert.equal(await page.locator('.settings-footer span').nth(1).innerText(), version, 'Settings must show the tested runtime version');
     assert.equal(await page.getByRole('switch', { name: '启用QQ 音乐', exact: true }).isDisabled(), true);
     assert.equal(await page.getByRole('switch', { name: '启用Spotify', exact: true }).isDisabled(), true);
     assert.equal(await page.getByRole('switch', { name: '启用Jamendo', exact: true }).isDisabled(), true);
@@ -311,10 +515,28 @@ try {
     await page.getByRole('button', { name: '设置', exact: true }).click();
     await setSource('网易云音乐', true);
     await setSource('Apple Music', true);
-    return { themes: ['dark', 'light'], disabledSources: ['qq', 'spotify', 'jamendo'], emptySearch: true };
+    return { version, themes: ['dark', 'light'], disabledSources: ['qq', 'spotify', 'jamendo'], emptySearch: true };
   });
 
   if (process.env.SHENGJI_E2E_SKIP_ONLINE !== '1') {
+    await check('Explicit local lyrics matching identifies Living as instrumental and persists the real result', async () => {
+      await localView();
+      await page.locator(`[data-track-id="${localId}"]`).getByRole('button', { name: '播放 Living', exact: true }).click();
+      await playing();
+      await page.getByRole('button', { name: '暂停', exact: true }).click();
+      await page.getByRole('button', { name: '歌词', exact: true }).click();
+      await page.getByRole('heading', { name: '暂无歌词', exact: true }).waitFor();
+      await page.getByRole('button', { name: '匹配在线歌词', exact: true }).click();
+      await page.getByRole('heading', { name: '纯音乐', exact: true }).waitFor({ timeout: 65_000 });
+      const lyrics = await page.evaluate((id) => window.shengji.lyrics(id), localId);
+      assert.equal(lyrics.source, 'netease');
+      assert.equal(lyrics.status, 'instrumental');
+      assert.equal(lyrics.synchronized, false);
+      assert.equal(await page.locator('.lyric-line').count(), 0);
+      await page.screenshot({ path: path.join(screenshots, 'lyrics-instrumental-light.png') });
+      return { source: lyrics.source, status: lyrics.status, matchedTitle: lyrics.matchedTitle, savedForOffline: true };
+    });
+
     await check('Live catalog search, source filtering, sorting and real covers', async () => {
       await search('Florian Bur Living');
       assert.equal(await page.locator('.source-status.ok').count(), 2, await page.locator('.source-statuses').innerText());
@@ -334,11 +556,15 @@ try {
     });
 
     await check('Public full online MP3 playback really decodes and seeks', async () => {
+      if ((await audio()).muted) await page.getByRole('button', { name: '取消静音', exact: true }).click();
       await page.locator('[data-track-id="netease:36841028"]').getByRole('button', { name: '播放 Living', exact: true }).click();
       await playing();
+      await signal();
       const before = await audio();
       assert.ok(before.duration > 120);
-      assert.match(before.source, /music\.126\.net/);
+      assert.match(before.source, /^shengji-media:\/\/stream\/[0-9a-f-]{36}$/);
+      const metrics = await spectrum();
+      assert.ok(metrics.rms > 0.0001, 'Online audio must reach Web Audio instead of a CORS-silenced graph');
       await page.waitForTimeout(800);
       assert.ok((await audio()).position > before.position + 0.4);
       await page.getByRole('button', { name: '暂停', exact: true }).click();
@@ -347,7 +573,8 @@ try {
       await playing();
       assert.ok((await audio()).position > 50);
       await page.getByRole('button', { name: '暂停', exact: true }).click();
-      return await audio();
+      await page.getByRole('button', { name: '静音', exact: true }).click();
+      return { ...await audio(), spectrumRms: metrics.rms };
     });
 
     await check('Official Apple audio decodes as a labeled preview, not a full song', async () => {
@@ -359,8 +586,11 @@ try {
       await playing();
       const state = await audio();
       assert.ok(state.duration > 10 && state.duration < 95);
-      assert.match(state.source, /itunes\.apple\.com|mzstatic\.com/);
+      assert.match(state.source, /^shengji-media:\/\/stream\/[0-9a-f-]{36}$/);
       assert.equal(await page.locator('.now-meta .status-tag.preview').count(), 1);
+      await page.getByRole('button', { name: '歌词', exact: true }).click();
+      await page.getByRole('heading', { name: '试听无同步歌词', exact: true }).waitFor();
+      assert.equal(await page.locator('.lyric-line').count(), 0);
       await page.getByRole('button', { name: '暂停', exact: true }).click();
       return { duration: state.duration, labeledPreview: true, position: state.position };
     });
@@ -375,6 +605,35 @@ try {
       await page.waitForFunction(() => [...document.querySelectorAll<HTMLImageElement>('.album-image img')].some((image) => image.naturalWidth > 50));
       await page.screenshot({ path: path.join(screenshots, 'albums-light.png') });
       return { albumTiles: await page.locator('.album-tile').count(), chineseResults: true };
+    });
+
+    await check('Real online vocal lyrics and translations synchronize and seek to the selected line', async () => {
+      await search('Dream It Possible Delacey');
+      await page.getByRole('tab', { name: '歌曲', exact: true }).click();
+      await page.waitForFunction(() => !document.querySelector('.source-status.loading'), undefined, { timeout: 65_000 });
+      await page.getByRole('combobox', { name: '音源筛选', exact: true }).selectOption('netease');
+      const row = page.locator('.track-row[data-track-id^="netease:"]')
+        .filter({ has: page.getByText('Dream It Possible', { exact: true }) })
+        .filter({ has: page.getByText('Delacey', { exact: true }) }).first();
+      await row.waitFor();
+      const id = await row.getAttribute('data-track-id');
+      assert.ok(id && /^netease:\d+$/.test(id));
+      assert.match(await row.innerText(), /完整播放/);
+      await row.getByRole('button', { name: '播放 Dream It Possible', exact: true }).click();
+      await playing();
+      await page.getByRole('button', { name: '暂停', exact: true }).click();
+      await page.getByRole('button', { name: '歌词', exact: true }).click();
+      await page.locator('.lyric-lines .lyric-line').nth(5).waitFor();
+      assert.ok(await page.locator('.lyric-line small').count(), 'Genuine translation should be displayed');
+      const lyrics = await page.evaluate((id) => window.shengji.lyrics(id), id);
+      assert.equal(lyrics.source, 'netease');
+      assert.equal(lyrics.synchronized, true);
+      const target = lyrics.lines.find((line) => line.timestamp > 20 && line.translation && line.content.trim())!;
+      assert.ok(target);
+      await page.locator('.lyric-line').filter({ has: page.getByText(target.content, { exact: true }) }).first().click();
+      assert.ok(Math.abs((await audio()).position - target.timestamp) < 0.3);
+      await page.screenshot({ path: path.join(screenshots, 'lyrics-online-translated.png') });
+      return { id, lines: lyrics.lines.length, translatedLines: lyrics.lines.filter((line) => line.translation).length, seek: target.timestamp };
     });
   } else {
     checks.push({ name: 'Live online catalogs and playback', status: 'not-tested', detail: 'SHENGJI_E2E_SKIP_ONLINE=1' });
@@ -392,6 +651,14 @@ try {
     await page.waitForFunction(() => innerWidth >= 900 && innerWidth < 960 && innerHeight < 680);
     const compact = await layout();
     await page.screenshot({ path: path.join(screenshots, 'library-compact.png') });
+    await page.getByRole('button', { name: '歌词', exact: true }).click();
+    await page.locator('.instrumental-view').waitFor();
+    const compactLyrics = await lyricsLayout();
+    await page.screenshot({ path: path.join(screenshots, 'lyrics-compact.png') });
+    await page.getByRole('button', { name: '音效', exact: true }).click();
+    const compactEffects = await effectsLayout();
+    await page.screenshot({ path: path.join(screenshots, 'effects-light-compact.png') });
+    await page.getByRole('button', { name: '关闭对话框', exact: true }).click();
     await main.evaluate((window) => { window.setSize(1280, 800); window.setPosition(-12000, -12000); });
     const opened = application!.waitForEvent('window');
     await page.getByRole('button', { name: '迷你播放器', exact: true }).click();
@@ -404,7 +671,7 @@ try {
     await mini.screenshot({ path: path.join(screenshots, 'mini.png') });
     assert.equal(await mini.locator('#audio-engine').count(), 0, 'Mini window must not create a second audio engine');
     await mini.getByRole('button', { name: '关闭迷你播放器', exact: true }).click();
-    return { desktop, compact, miniControls: true };
+    return { desktop, compact, compactLyrics, compactEffects, miniControls: true };
   });
 
   await check('Invalid IPC, unauthorized local access and forbidden download are rejected', async () => {
@@ -419,6 +686,8 @@ try {
       return {
         download, traversal, queue, playlist,
         nodeAbsent: typeof (window as unknown as { require?: unknown }).require === 'undefined',
+        effects: await window.shengji.saveAudioEffects({ enabled: true, preset: 'custom', bands: [100], width: 10, compressor: false, visualizer: true })
+          .then(() => false, () => true),
       };
     }, localId);
     assert.ok(Object.values(results).every(Boolean));
@@ -426,7 +695,8 @@ try {
   });
 
   await check('Immediate close/restart restores exact duplicate queue index and playback state', async () => {
-    await page.getByRole('button', { name: '展开播放队列', exact: true }).click();
+    const expand = page.getByRole('button', { name: '展开播放队列', exact: true });
+    if (await expand.count()) await expand.click();
     await page.getByRole('tab', { name: /播放队列/ }).click();
     await menu(localId, '加入队列');
     await page.waitForFunction(() => document.querySelectorAll('.queue-track').length === 3);
@@ -441,6 +711,18 @@ try {
     await page.getByRole('button', { name: '静音', exact: true }).click();
     await dragRange(page.getByRole('slider', { name: '播放进度', exact: true }), 0.41);
     const expected: Pick<PlaybackState, 'position' | 'volume' | 'muted'> = await audio();
+    const expectedEffects: AudioEffectsSettings = { enabled: true, preset: 'custom', bands: [0, 0, 0, 0, 0, -12, 0, 0, 0, 0], width: 0, compressor: true, visualizer: false };
+    await page.getByRole('button', { name: '音效', exact: true }).click();
+    const modal = page.getByRole('dialog', { name: '音效', exact: true });
+    await modal.getByRole('switch', { name: '启用音效', exact: true }).setChecked(true);
+    await modal.getByRole('combobox', { name: '音色预设', exact: true }).selectOption('flat');
+    await modal.getByRole('slider', { name: '均衡器 1000 Hz', exact: true }).press('Home');
+    await modal.getByRole('slider', { name: '立体声宽度', exact: true }).press('Home');
+    await modal.getByRole('switch', { name: '动态压缩', exact: true }).setChecked(true);
+    await effectsLayout();
+    await page.screenshot({ path: path.join(screenshots, 'effects-dark-desktop.png') });
+    await modal.getByRole('switch', { name: '频谱动画', exact: true }).setChecked(false);
+    await modal.getByRole('button', { name: '关闭对话框', exact: true }).click();
     const closed = application!.waitForEvent('close');
     await page.getByRole('button', { name: '关闭声迹', exact: true }).click();
     await closed;
@@ -462,8 +744,20 @@ try {
     assert.equal(snapshot.playlists.find((playlist) => playlist.id === playlistId)?.name, 'E2E Renamed');
     assert.ok(snapshot.recent.some((track) => track.id === localId));
     assert.ok(snapshot.searchHistory.length);
+    assert.deepEqual(snapshot.audioEffects, expectedEffects);
+    await page.getByRole('button', { name: '音效', exact: true }).click();
+    const restoredModal = page.getByRole('dialog', { name: '音效', exact: true });
+    assert.equal(await restoredModal.getByRole('combobox', { name: '音色预设', exact: true }).inputValue(), 'custom');
+    assert.equal(await restoredModal.getByRole('slider', { name: '均衡器 1000 Hz', exact: true }).inputValue(), '-12');
+    assert.equal(await restoredModal.getByRole('switch', { name: '频谱动画', exact: true }).isChecked(), false);
+    await restoredModal.getByRole('button', { name: '关闭对话框', exact: true }).click();
+    if (process.env.SHENGJI_E2E_SKIP_ONLINE !== '1') {
+      await page.getByRole('button', { name: '歌词', exact: true }).click();
+      await page.getByRole('heading', { name: '纯音乐', exact: true }).waitFor();
+      await page.screenshot({ path: path.join(screenshots, 'lyrics-restored-dark.png') });
+    }
     await page.screenshot({ path: path.join(screenshots, 'restored-dark.png') });
-    return { position: restored.position, volume: restored.volume, muted: restored.muted, queue: snapshot.playback.queue, index: snapshot.playback.index, mode: snapshot.playback.mode, theme: snapshot.settings.theme };
+    return { position: restored.position, volume: restored.volume, muted: restored.muted, queue: snapshot.playback.queue, index: snapshot.playback.index, mode: snapshot.playback.mode, theme: snapshot.settings.theme, effects: snapshot.audioEffects };
   });
 
   await check('No renderer JavaScript errors', async () => {

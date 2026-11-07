@@ -11,8 +11,13 @@ export async function tempDir(label: string): Promise<string> {
   return mkdtemp(path.join(root, `${label}-`));
 }
 
-export async function writeWav(file: string, seconds = 2, tagged = false): Promise<void> {
+export async function writeWav(file: string, seconds = 2, tagged = false, amplitude = 0.12): Promise<void> {
   const samples = Buffer.alloc(16000 * 2 * seconds);
+  for (let i = 0; i < samples.length / 2; i++) {
+    const time = i / 16000;
+    const signal = amplitude * Math.sin(2 * Math.PI * 440 * time) + amplitude / 8 * Math.sin(2 * Math.PI * 880 * time);
+    samples.writeInt16LE(Math.round(signal * 32767), i * 2);
+  }
   const header = Buffer.alloc(44);
   header.write('RIFF', 0); header.writeUInt32LE(36 + samples.length, 4); header.write('WAVEfmt ', 8);
   header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22);

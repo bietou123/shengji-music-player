@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { version } from "../package.json";
 import {
   ArrowDownToLine,
   ArrowLeft,
@@ -1182,7 +1183,7 @@ export function SettingsView() {
       </section>
       <footer className="settings-footer">
         <span>声迹</span>
-        <span>1.0.0</span>
+        <span>{version}</span>
         <span>Electron · SQLite</span>
       </footer>
     </>

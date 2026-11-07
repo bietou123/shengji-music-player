@@ -18,6 +18,7 @@ export interface Track {
   format?: string;
   bitrate?: number;
   sampleRate?: number;
+  genres?: string[];
   filePath?: string;
   previewUrl?: string;
   streamUrl?: string;
@@ -78,11 +79,28 @@ export interface LibrarySnapshot {
   playback: PlaybackState;
   queueTracks: Track[];
   searchHistory: string[];
+  audioEffects: AudioEffectsSettings;
   sources: SourceDescriptor[];
 }
 export interface ImportResult { imported: number; skipped: number; errors: string[]; }
 export interface ResolvedTrack { track: Track; url: string; }
-export interface LyricLine { timestamp: number; content: string; }
+export interface LyricLine { timestamp: number; content: string; translation?: string; }
+export interface LyricsResult {
+  lines: LyricLine[];
+  status: 'available' | 'instrumental' | 'missing' | 'unsupported' | 'unmatched';
+  source: 'local' | 'netease' | 'lrclib' | null;
+  synchronized: boolean;
+  matchedTitle?: string;
+}
+export type AudioPreset = 'auto' | 'flat' | 'piano' | 'vocal' | 'bass' | 'warm' | 'bright' | 'night' | 'custom';
+export interface AudioEffectsSettings {
+  enabled: boolean;
+  preset: AudioPreset;
+  bands: number[];
+  width: number;
+  compressor: boolean;
+  visualizer: boolean;
+}
 export type PlayerCommand = 'toggle' | 'next' | 'previous' | 'pause' | 'play' | 'refresh';
 export interface PlayerSummary { title: string; artist: string; playing: boolean; hasTrack: boolean; }
 export interface MiniState { current: Track | null; status: string; position: number; duration: number; volume: number; muted: boolean; }
@@ -97,7 +115,9 @@ export interface ShengjiAPI {
   rescanFolders(): Promise<ImportResult>;
   removeLocal(id: string): Promise<void>;
   resolveTrack(id: string): Promise<ResolvedTrack>;
-  lyrics(id: string): Promise<LyricLine[]>;
+  lyrics(id: string, online?: boolean, refresh?: boolean): Promise<LyricsResult>;
+  saveAudioEffects(settings: AudioEffectsSettings): Promise<AudioEffectsSettings>;
+  audioEffectsCheckpoint(settings: AudioEffectsSettings): void;
   favorite(id: string, enabled: boolean): Promise<void>;
   recordPlay(id: string): Promise<void>;
   createPlaylist(name: string): Promise<string>;

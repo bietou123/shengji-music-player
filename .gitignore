@@ -9,4 +9,17 @@ build/icon.png
 *.log
 *.sqlite*
 *.db
+*.db-*
+*.mp3
+*.flac
+*.wav
+*.aac
+*.m4a
+*.ogg
+*.opus
+*.webm
+*.lrc
+*.pfx
+*.p12
+*.pem
 .DS_Store

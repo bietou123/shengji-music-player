@@ -4,6 +4,7 @@ import path from 'node:path';
 import { parseBuffer } from 'music-metadata';
 import { AppleAdapter, ArchiveAdapter, NeteaseAdapter } from '../electron/sources';
 import { fetchMedia, JsonClient, networkError } from '../electron/network';
+import { lyricsFromLrc } from '../electron/lyrics';
 import type { SourceAdapter } from '../electron/sources';
 import type { Track } from '../shared/types';
 
@@ -49,6 +50,26 @@ async function probe(adapter: SourceAdapter, track: Track | undefined) {
 }
 await check('Netease actual audio Range and MP3 metadata', () => probe(netease, netTrack));
 await check('Apple actual audio Range', () => probe(apple, appleTrack));
+
+await check('Netease genuine instrumental lyrics marker', async () => {
+  const data = await client.get<{ code: number; lrc?: { lyric?: string } }>('https://music.163.com/api/song/lyric?id=36841028&lv=-1&tv=-1');
+  assert.equal(data.code, 200);
+  const result = lyricsFromLrc(data.lrc?.lyric ?? '', 'netease');
+  assert.equal(result.status, 'instrumental');
+  assert.deepEqual(result.lines, []);
+  return { source: result.source, status: result.status };
+});
+await check('Netease genuine synchronized vocal lyrics and translations', async () => {
+  const data = await client.get<{ code: number; lrc?: { lyric?: string }; tlyric?: { lyric?: string } }>('https://music.163.com/api/song/lyric?id=38592976&lv=-1&tv=-1');
+  assert.equal(data.code, 200);
+  const result = lyricsFromLrc(data.lrc?.lyric ?? '', 'netease', data.tlyric?.lyric);
+  assert.equal(result.status, 'available');
+  assert.equal(result.synchronized, true);
+  assert.ok(result.lines.length > 10);
+  const translations = result.lines.filter((line) => line.translation).length;
+  assert.ok(translations > 10);
+  return { source: result.source, synchronized: result.synchronized, lines: result.lines.length, translatedLines: translations };
+});
 
 try {
   const archive = new ArchiveAdapter(new JsonClient(fetch, { timeoutMs: 5000 })); const tracks = await archive.search('Bach', 'artist');

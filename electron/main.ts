@@ -7,10 +7,12 @@ import { parseFile } from 'music-metadata';
 import { z } from 'zod';
 import { LibraryDatabase } from './database';
 import { LocalLibrary } from './library';
-import { mediaResponse } from './media';
+import { mediaResponse, RemoteMedia } from './media';
 import { fetchMedia, JsonClient, validateMediaUrl } from './network';
 import { isOpenLicense, SourceRegistry } from './sources';
-import type { DownloadRecord, MiniState, PlaybackState, PlayerCommand, PlayerSummary, SearchRequest, Settings, Track } from '../shared/types';
+import { LyricsService } from './lyrics';
+import { audioEffectsSchema } from '../shared/audio-effects';
+import type { AudioEffectsSettings, DownloadRecord, MiniState, PlaybackState, PlayerCommand, PlayerSummary, SearchRequest, Settings, Track } from '../shared/types';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const TEST = process.env.SHENGJI_TEST === '1';
@@ -27,10 +29,13 @@ let quitting = false;
 let database: LibraryDatabase;
 let library: LocalLibrary;
 let sources: SourceRegistry;
+let lyrics: LyricsService;
+const remoteMedia = new RemoteMedia();
 const catalog = new Map<string, Track>();
 let lastMini: MiniState = { current: null, status: 'idle', position: 0, duration: 0, volume: 0.65, muted: TEST };
 let summary: PlayerSummary = { title: '声迹', artist: '', playing: false, hasTrack: false };
 let lastCheckpoint: PlaybackState | undefined;
+let lastEffectsCheckpoint: AudioEffectsSettings | undefined;
 
 const idSchema = z.string().min(1).max(2000);
 const sourceSchema = z.enum(['netease', 'itunes', 'archive', 'jamendo']);
@@ -202,9 +207,15 @@ function registerIPC(): void {
       if (!file || !file.isFile()) throw new Error('本地音频已被移动或删除');
       return { track, url: `shengji-media://track/${encodeURIComponent(track.id)}` };
     }
-    const resolved = await sources.resolve(track); registerTracks([resolved.track]); return resolved;
+    const resolved = await sources.resolve(track); registerTracks([resolved.track]);
+    return { track: resolved.track, url: remoteMedia.authorize(resolved.url, resolved.track.source) };
   });
-  handle('player:lyrics', (id: string) => library.lyrics(getTrack(id)));
+  handle('player:lyrics', (id: string, online = false, refresh = false) => lyrics.get(getTrack(id), z.boolean().parse(online), z.boolean().parse(refresh)));
+  handle('player:effects', (input: AudioEffectsSettings) => {
+    const settings = audioEffectsSchema.parse(input);
+    database.setValue('audioEffects', settings);
+    return settings;
+  });
   handle('library:favorite', (id: string, value: boolean) => database.favorite(getTrack(id), z.boolean().parse(value)));
   handle('library:played', (id: string) => database.recordPlay(getTrack(id)));
   handle('playlist:create', (name: string) => database.createPlaylist(nameSchema.parse(name)));
@@ -265,6 +276,11 @@ function registerIPC(): void {
     if (state.currentId ? state.queue[state.index] !== state.currentId : state.index !== -1) return;
     try { state.queue.forEach(getTrack); lastCheckpoint = state; } catch { /* Ignore stale or unauthorized track IDs. */ }
   });
+  ipcMain.on('player:effects-checkpoint', (event, input: AudioEffectsSettings) => {
+    if (!trusted(event) || event.sender !== window?.webContents) return;
+    const result = audioEffectsSchema.safeParse(input);
+    if (result.success) lastEffectsCheckpoint = result.data;
+  });
   ipcMain.on('player:mini-broadcast', (event, state: MiniState) => {
     if (!trusted(event) || event.sender !== window?.webContents) return;
     lastMini = state;
@@ -282,8 +298,10 @@ else {
     const defaults: Settings = { theme: 'light', enabledSources: ['netease', 'itunes'], downloadDir: path.join(app.getPath('music'), '声迹下载'), closeToTray: false, mediaKeys: true };
     database = await LibraryDatabase.open(path.join(app.getPath('userData'), 'library.sqlite'), defaults, TEST);
     library = new LocalLibrary(database, path.join(app.getPath('userData'), 'artwork'), (done, total) => window?.webContents.send('import:progress', { done, total }));
-    sources = new SourceRegistry(new JsonClient(), getJamendoKey, () => database.settings().enabledSources, () => Boolean(getJamendoKey()));
-    protocol.handle('shengji-media', (request) => mediaResponse(request, database, path.join(app.getPath('userData'), 'artwork')));
+    const client = new JsonClient();
+    sources = new SourceRegistry(client, getJamendoKey, () => database.settings().enabledSources, () => Boolean(getJamendoKey()));
+    lyrics = new LyricsService(library, database, client, () => database.settings().enabledSources);
+    protocol.handle('shengji-media', (request) => new URL(request.url).hostname === 'stream' ? remoteMedia.response(request) : mediaResponse(request, database, path.join(app.getPath('userData'), 'artwork')));
     registerIPC();
     const imports = process.argv.filter((arg) => arg.startsWith('--import=')).map((arg) => arg.slice(9));
     if (imports.length) await library.import(imports);
@@ -301,6 +319,7 @@ app.on('before-quit', () => {
     for (const id of playback.queue) { const track = catalog.get(id) || database.getTrack(id); if (track) database.putTrack(track); }
     const current = lastMini.current && playback.currentId === lastMini.current.id;
     database.setValue('playback', current ? { ...playback, position: lastMini.position, volume: lastMini.volume, muted: lastMini.muted } : playback, false);
+    if (lastEffectsCheckpoint) database.setValue('audioEffects', lastEffectsCheckpoint, false);
     database.flush();
   }
   globalShortcut.unregisterAll();

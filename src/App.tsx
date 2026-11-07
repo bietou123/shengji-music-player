@@ -35,6 +35,7 @@ import {
   Shuffle,
   SkipBack,
   SkipForward,
+  SlidersHorizontal,
   Square,
   Trash2,
   Volume1,
@@ -48,6 +49,8 @@ import type { MiniState, PlayMode, Track } from "../shared/types";
 import { api } from "./api";
 import { act, useApp, type View } from "./store";
 import { player, usePlayer } from "./player";
+import { AudioEffectsModal } from "./AudioEffects";
+import { Spectrum } from "./Spectrum";
 import {
   AddPlaylistModal,
   Button,
@@ -281,7 +284,7 @@ const MODE_ICONS: Record<PlayMode, LucideIcon> = {
 };
 const modes: PlayMode[] = ["order", "loop", "one", "shuffle"];
 
-function PlayerBar({ onLyrics }: { onLyrics(): void }) {
+function PlayerBar({ onLyrics, onEffects }: { onLyrics(): void; onEffects(): void }) {
   const state = usePlayer();
   const favorites = useApp((app) => app.snapshot?.favorites);
   const queueVisible = useApp((app) => app.queueVisible);
@@ -296,7 +299,7 @@ function PlayerBar({ onLyrics }: { onLyrics(): void }) {
         ? Volume1
         : Volume2;
   return (
-    <footer className="player-bar" aria-label="播放控制">
+    <footer className="player-bar" aria-label="播放控制" data-playing={playing}>
       <div className="now-playing">
         <button
           className="now-art-button"
@@ -404,6 +407,8 @@ function PlayerBar({ onLyrics }: { onLyrics(): void }) {
         </div>
       </div>
       <div className="player-tools">
+        <Spectrum compact />
+        <IconButton icon={SlidersHorizontal} label="音效" active={state.effects.enabled} onClick={onEffects} />
         <div className="volume-control">
           <IconButton
             icon={volumeIcon}
@@ -463,11 +468,11 @@ function PlayerBar({ onLyrics }: { onLyrics(): void }) {
 }
 
 function Lyrics() {
-  const { current, lyrics, position } = usePlayer();
+  const { current, lyrics, position, lyricsLoading, lyricsError, status } = usePlayer();
   const container = useRef<HTMLDivElement>(null);
-  const activeIndex = lyrics.findLastIndex(
+  const activeIndex = lyrics.synchronized ? lyrics.lines.findLastIndex(
     (line) => line.timestamp <= position,
-  );
+  ) : -1;
   useEffect(() => {
     const active =
       container.current?.querySelector<HTMLElement>(".lyric-line.active");
@@ -478,32 +483,46 @@ function Lyrics() {
           container.current.offsetTop -
           container.current.clientHeight / 2 +
           active.clientHeight / 2,
-        behavior: "smooth",
+        behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? "instant" : "smooth",
       });
   }, [activeIndex]);
   return (
-    <>
-      <div className="lyric-artwork">
+    <div className="lyrics-content" data-playing={status === "playing"} aria-busy={lyricsLoading}>
+      <div className="lyric-artwork" key={current?.id}>
         <Cover track={current} eager />
         <strong title={current?.title}>{current?.title}</strong>
-        <span>{current?.artist}</span>
+        <span title={current?.artist}>{current?.artist}</span>
       </div>
-      {lyrics.length ? (
+      {lyrics.status === 'available' ? (
+        <>
+        <div className="lyrics-source"><span>{lyrics.source === 'local' ? '本地歌词' : lyrics.source === 'netease' ? '网易云音乐' : 'LRCLIB'}{!lyrics.synchronized ? ' · 未同步' : ''}</span><IconButton icon={lyricsLoading ? LoaderCircle : RotateCw} className={lyricsLoading ? 'spin' : ''} label="刷新歌词" disabled={lyricsLoading} onClick={() => { void player.loadLyrics(current?.source === 'local' && lyrics.source !== 'local', true); }} /></div>
         <div className="lyric-lines" ref={container}>
-          {lyrics.map((line, index) => (
+          {lyrics.lines.map((line, index) => lyrics.synchronized ? (
             <button
               key={`${line.timestamp}:${index}`}
               className={`lyric-line ${index === activeIndex ? "active" : ""}`}
               onClick={() => player.seek(line.timestamp)}
             >
-              {line.content || "♪"}
+              <span>{line.content}</span>
+              {line.translation && <small>{line.translation}</small>}
             </button>
-          ))}
+          ) : <div className="lyric-line" key={index}>{line.content}</div>)}
         </div>
+        {lyricsError && <p className="lyrics-error" role="alert">{lyricsError}</p>}
+        </>
       ) : (
-        <EmptyState icon={Mic2} title="暂无歌词" />
+        <div className="instrumental-view">
+          {lyricsLoading ? <LoaderCircle className="spin" size={18} /> : lyricsError ? <AlertCircle size={19} /> : <AudioLines size={19} />}
+          <h3>{lyricsLoading ? '正在获取歌词' : lyricsError ? '歌词加载失败' : lyrics.status === 'instrumental' ? '纯音乐' : lyrics.status === 'unsupported' && current?.availability === 'preview' ? '试听无同步歌词' : lyrics.status === 'unmatched' ? '未找到匹配歌词' : '暂无歌词'}</h3>
+          {lyricsError && <p className="lyrics-error" role="alert">{lyricsError}</p>}
+          <Spectrum />
+          <div className="spectrum-scale"><span>低频</span><span>中频</span><span>高频</span></div>
+          {lyrics.source && <span className="lyrics-origin">{lyrics.source === 'netease' ? '网易云音乐' : lyrics.source === 'lrclib' ? 'LRCLIB' : '本地歌词'}</span>}
+          {current?.source === 'local' && <Button icon={Search} disabled={lyricsLoading} title="向网易云音乐和 LRCLIB 发送歌曲名、歌手与时长" onClick={() => { void player.loadLyrics(true, true); }}>匹配在线歌词</Button>}
+          {current?.source === 'netease' && <Button icon={RotateCw} disabled={lyricsLoading} variant="text" onClick={() => { void player.loadLyrics(false, true); }}>重试歌词</Button>}
+        </div>
       )}
-    </>
+    </div>
   );
 }
 
@@ -666,6 +685,7 @@ export function App() {
     importProgress,
   } = useApp();
   const [create, setCreate] = useState(false);
+  const [effectsOpen, setEffectsOpen] = useState(false);
   const [adding, setAdding] = useState<Track[] | null>(null);
   const [album, setAlbum] = useState<AlbumGroup | null>(null);
   const [queueTab, setQueueTab] = useState<"queue" | "lyrics">("queue");
@@ -829,7 +849,8 @@ export function App() {
         <div className="content-inner">{content}</div>
       </main>
       {queueVisible && <QueuePanel tab={queueTab} onTab={setQueueTab} />}
-      <PlayerBar onLyrics={showLyrics} />
+      <PlayerBar onLyrics={showLyrics} onEffects={() => setEffectsOpen(true)} />
+      {effectsOpen && <AudioEffectsModal onClose={() => setEffectsOpen(false)} />}
       {create && <PlaylistNameModal onClose={() => setCreate(false)} />}
       {adding && (
         <AddPlaylistModal tracks={adding} onClose={() => setAdding(null)} />

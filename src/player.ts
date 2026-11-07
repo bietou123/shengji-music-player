@@ -2,9 +2,12 @@ import { create } from "zustand";
 import { api, errorMessage } from "./api";
 import { playable } from "../shared/catalog";
 import { moveItem, nextIndex } from "../shared/queue";
+import { DEFAULT_AUDIO_EFFECTS, effectiveEffects } from "../shared/audio-effects";
+import { AudioGraph } from "./audio-graph";
 import type {
+  AudioEffectsSettings,
   LibrarySnapshot,
-  LyricLine,
+  LyricsResult,
   MiniState,
   PlaybackState,
   PlayMode,
@@ -24,8 +27,14 @@ interface PlayerStore {
   muted: boolean;
   mode: PlayMode;
   error: string;
-  lyrics: LyricLine[];
+  lyrics: LyricsResult;
+  lyricsLoading: boolean;
+  lyricsError: string;
+  effects: AudioEffectsSettings;
+  effectsHeadroom: number;
+  effectsError: string;
 }
+const emptyLyrics = (): LyricsResult => ({ lines: [], status: "missing", source: null, synchronized: false });
 export const usePlayer = create<PlayerStore>(() => ({
   queue: [],
   index: -1,
@@ -37,7 +46,12 @@ export const usePlayer = create<PlayerStore>(() => ({
   muted: false,
   mode: "order",
   error: "",
-  lyrics: [],
+  lyrics: emptyLyrics(),
+  lyricsLoading: false,
+  lyricsError: "",
+  effects: { ...DEFAULT_AUDIO_EFFECTS, bands: [...DEFAULT_AUDIO_EFFECTS.bands] },
+  effectsHeadroom: 0,
+  effectsError: "",
 }));
 
 class PlaybackEngine {
@@ -49,6 +63,10 @@ class PlaybackEngine {
   private savedAt = 0;
   private saving: Promise<void> = Promise.resolve();
   private initialized = false;
+  private graph: AudioGraph | null = null;
+  private lyricsEpoch = 0;
+  private effectsTimer: ReturnType<typeof setTimeout> | undefined;
+  private savingEffects: Promise<void> = Promise.resolve();
 
   async initialize(snapshot: LibrarySnapshot): Promise<void> {
     if (this.initialized) return;
@@ -56,8 +74,11 @@ class PlaybackEngine {
     this.audio = document.createElement("audio");
     this.audio.id = "audio-engine";
     this.audio.preload = "metadata";
+    this.audio.crossOrigin = "anonymous";
     this.audio.hidden = true;
     document.body.append(this.audio);
+    try { this.graph = new AudioGraph(this.audio); }
+    catch { usePlayer.setState({ effectsError: "音频处理引擎不可用" }); }
     const state = snapshot.playback;
     const queue = snapshot.queueTracks;
     const index =
@@ -73,7 +94,9 @@ class PlaybackEngine {
       volume: state.volume,
       muted: state.muted,
       mode: state.mode,
+      effects: snapshot.audioEffects,
     });
+    this.configureEffects();
     this.audio.addEventListener("loadedmetadata", () => {
       if (!this.audio || !usePlayer.getState().current) return;
       clearTimeout(this.loadTimer);
@@ -137,6 +160,7 @@ class PlaybackEngine {
     this.installMediaSession();
     window.addEventListener("beforeunload", () => {
       void this.persist();
+      void this.persistEffects();
     });
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) void this.persist();
@@ -177,16 +201,13 @@ class PlaybackEngine {
       error: "",
       position,
       duration: track.availability === "preview" ? 0 : track.duration,
-      lyrics: [],
+      lyrics: emptyLyrics(),
+      lyricsError: "",
     });
     this.armTimeout();
     void this.persist();
-    void api
-      .lyrics(track.id)
-      .then((lyrics) => {
-        if (epoch === this.epoch) usePlayer.setState({ lyrics });
-      })
-      .catch(() => undefined);
+    this.configureEffects();
+    void this.loadLyrics();
     try {
       const resolved = await api.resolveTrack(track.id);
       if (epoch !== this.epoch) return;
@@ -196,6 +217,11 @@ class PlaybackEngine {
           item.id === track.id ? resolved.track : item,
         ),
       }));
+      this.configureEffects();
+      if (resolved.track.availability === "preview") {
+        ++this.lyricsEpoch;
+        usePlayer.setState({ lyrics: { ...emptyLyrics(), status: "unsupported" }, lyricsLoading: false, lyricsError: "" });
+      }
       this.audio.src = resolved.url;
       this.audio.load();
       this.updateMetadata(resolved.track);
@@ -208,6 +234,8 @@ class PlaybackEngine {
     if (!this.audio || !this.intentPlay) return;
     const epoch = this.epoch;
     try {
+      await this.graph?.resume();
+      if (epoch !== this.epoch || !this.intentPlay) return;
       await this.audio.play();
       if (epoch === this.epoch && this.intentPlay) {
         const track = usePlayer.getState().current;
@@ -411,6 +439,7 @@ class PlaybackEngine {
 
   clear(): void {
     ++this.epoch;
+    ++this.lyricsEpoch;
     clearTimeout(this.loadTimer);
     this.intentPlay = false;
     if (this.audio) {
@@ -425,9 +454,12 @@ class PlaybackEngine {
       status: "idle",
       position: 0,
       duration: 0,
-      lyrics: [],
+      lyrics: emptyLyrics(),
+      lyricsLoading: false,
+      lyricsError: "",
       error: "",
     });
+    this.configureEffects();
     if ("mediaSession" in navigator) navigator.mediaSession.metadata = null;
     void this.persist();
   }
@@ -455,6 +487,52 @@ class PlaybackEngine {
           .notify(`播放状态未保存：${errorMessage(error)}`, "error");
       });
     return this.saving;
+  }
+
+  async loadLyrics(online = false, refresh = false): Promise<void> {
+    const track = usePlayer.getState().current;
+    if (!track) return;
+    const epoch = ++this.lyricsEpoch;
+    usePlayer.setState({ lyricsLoading: true, lyricsError: "" });
+    try {
+      const lyrics = await api.lyrics(track.id, online, refresh);
+      if (epoch === this.lyricsEpoch) usePlayer.setState({ lyrics, lyricsLoading: false });
+    } catch (error) {
+      if (epoch === this.lyricsEpoch) usePlayer.setState({ lyricsLoading: false, lyricsError: errorMessage(error) });
+    }
+  }
+
+  setAudioEffects(update: Partial<AudioEffectsSettings>): void {
+    const effects = { ...usePlayer.getState().effects, ...update };
+    usePlayer.setState({ effects });
+    this.configureEffects();
+    api.audioEffectsCheckpoint(effects);
+    clearTimeout(this.effectsTimer);
+    this.effectsTimer = setTimeout(() => { void this.persistEffects(); }, 450);
+  }
+
+  setBand(index: number, value: number): void {
+    if (index < 0 || index >= DEFAULT_AUDIO_EFFECTS.bands.length || !Number.isFinite(value)) return;
+    const state = usePlayer.getState();
+    const bands = effectiveEffects({ ...state.effects, enabled: true }, state.current).bands;
+    bands[index] = Math.max(-12, Math.min(12, value));
+    this.setAudioEffects({ preset: "custom", bands });
+  }
+
+  spectrum() { return this.graph?.read() ?? null; }
+
+  private configureEffects(): void {
+    const { effects, current } = usePlayer.getState();
+    if (this.graph) usePlayer.setState({ effectsHeadroom: this.graph.configure(effects, current) });
+  }
+
+  private persistEffects(): Promise<void> {
+    clearTimeout(this.effectsTimer);
+    const effects = usePlayer.getState().effects;
+    api.audioEffectsCheckpoint(effects);
+    this.savingEffects = this.savingEffects.catch(() => undefined).then(() => api.saveAudioEffects(effects)).then(() => undefined)
+      .catch((error) => useApp.getState().notify(`音效未保存：${errorMessage(error)}`, "error"));
+    return this.savingEffects;
   }
 
   private broadcast(state: PlayerStore): void {

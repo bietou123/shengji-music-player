@@ -179,7 +179,7 @@ export function Modal({
     const focusable = () =>
       Array.from(
         panel.current?.querySelectorAll<HTMLElement>(
-          'button:not([disabled]),input,select,[tabindex="0"]',
+          'button:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex="0"]',
         ) ?? [],
       );
     focusable()
