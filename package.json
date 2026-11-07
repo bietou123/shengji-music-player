@@ -1,0 +1,99 @@
+{
+  "name": "shengji",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Shengji desktop music player",
+  "author": "bietou123",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "tsc --noEmit && vite build && node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "test:online": "tsx tests/online.smoke.ts",
+    "test:e2e": "tsx tests/e2e.ts",
+    "test:portable": "tsx tests/portable.smoke.ts",
+    "icon": "node scripts/icon.mjs",
+    "package": "npm run build && npm run icon && electron-builder --win nsis portable --x64",
+    "start": "electron ."
+  },
+  "dependencies": {
+    "lrc-kit": "^1.2.1",
+    "lucide-react": "^0.468.0",
+    "mime-types": "^3.0.1",
+    "music-metadata": "^11.10.1",
+    "range-parser": "^1.2.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "sql.js": "^1.13.0",
+    "zod": "^4.1.12",
+    "zustand": "^5.0.8"
+  },
+  "devDependencies": {
+    "@types/mime-types": "^3.0.1",
+    "@types/node": "^24.10.0",
+    "@types/range-parser": "^1.2.7",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@types/sql.js": "^1.4.9",
+    "@vitejs/plugin-react": "^5.1.0",
+    "electron": "45.2.3",
+    "electron-builder": "^26.0.12",
+    "esbuild": "^0.25.12",
+    "playwright": "^1.56.1",
+    "png-to-ico": "^3.0.1",
+    "prettier": "^3.9.10",
+    "sharp": "^0.34.5",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.2"
+  },
+  "build": {
+    "appId": "com.bietou.shengji",
+    "productName": "声迹",
+    "electronDist": "node_modules/electron/dist",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json",
+      "README.md",
+      "LICENSE"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/sql.js/dist/*.wasm"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "signExecutable": false,
+      "artifactName": "Shengji-${version}-${arch}.${ext}"
+    },
+    "portable": {
+      "artifactName": "Shengji-${version}-${arch}-portable.${ext}"
+    },
+    "nsis": {
+      "artifactName": "Shengji-${version}-${arch}-nsis.${ext}",
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "声迹",
+      "deleteAppDataOnUninstall": false,
+      "installerLanguages": [
+        "zh_CN",
+        "en_US"
+      ]
+    }
+  }
+}

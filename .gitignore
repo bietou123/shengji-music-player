@@ -1,0 +1,12 @@
+node_modules/
+dist/
+dist-electron/
+release/
+test-artifacts/
+build/icon.ico
+build/icon.png
+.env*
+*.log
+*.sqlite*
+*.db
+.DS_Store
