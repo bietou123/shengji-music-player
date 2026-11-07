@@ -391,7 +391,8 @@ function PlayerBar({ onLyrics, onEffects }: { onLyrics(): void; onEffects(): voi
             label={
               playing ? "暂停" : state.status === "error" ? "重试播放" : "播放"
             }
-            className={`play-button ${state.status === "loading" ? "loading-button" : ""}`}
+            className={`play-button glass-surface ${state.status === "loading" ? "loading-button" : ""}`}
+            data-glass-surface="play"
             disabled={!state.current && !state.queue.length}
             onClick={() => player.toggle()}
           />
@@ -980,7 +981,8 @@ export function MiniPlayer() {
             onClick={() => api.miniCommand("previous")}
           />
           <IconButton
-            className="mini-play-button"
+            className="mini-play-button glass-surface"
+            data-glass-surface="play"
             icon={state.status === "playing" ? Pause : Play}
             label={state.status === "playing" ? "暂停" : "播放"}
             disabled={!state.current}

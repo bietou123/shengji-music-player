@@ -3,6 +3,7 @@ dist/
 dist-electron/
 release/
 test-artifacts/
+.test-data-probe/
 build/icon.ico
 build/icon.png
 .env*

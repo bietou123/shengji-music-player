@@ -21,6 +21,7 @@ varying vec2 vUv;
 uniform vec2 uSize;
 uniform float uRadius;
 uniform vec2 uLight;
+uniform float uStrength;
 uniform float uDark;
 uniform float uOpacity;
 uniform sampler2D uCover;
@@ -29,6 +30,9 @@ uniform float uCoverOpacity;
 uniform vec2 uCoverScale;
 uniform vec2 uCoverOffset;
 uniform vec2 uCoverPixel;
+uniform vec2 uBackdropScale;
+uniform vec2 uBackdropOffset;
+uniform vec2 uCoverFade;
 
 float roundedBox(vec2 p, vec2 b, float r) {
   vec2 q = abs(p) - b + vec2(r);
@@ -41,37 +45,54 @@ void main() {
   float radius = min(uRadius, min(halfSize.x, halfSize.y));
   float distance = roundedBox(p, halfSize, radius);
   float depth = -distance;
-  if (depth < -0.7 || depth > 9.0) discard;
+  float bevelWidth = clamp(uSize.y * 0.11, 4.5, 8.0) * mix(0.75, 1.0, uStrength);
+  if (depth < -0.7 || depth > bevelWidth) discard;
 
   vec2 normal = normalize(vec2(
     roundedBox(p + vec2(0.35, 0.0), halfSize, radius) - roundedBox(p - vec2(0.35, 0.0), halfSize, radius),
     roundedBox(p + vec2(0.0, 0.35), halfSize, radius) - roundedBox(p - vec2(0.0, 0.35), halfSize, radius)
   ) + vec2(0.00001));
-  float edge = exp(-abs(distance) * 1.3);
-  float bevel = 1.0 - smoothstep(0.0, 8.0, max(depth, 0.0));
-  vec3 light = normalize(vec3(uLight, 1.0));
-  vec3 surfaceNormal = normalize(vec3(normal * 0.85, 0.65));
-  float specular = pow(max(dot(surfaceNormal, light), 0.0), 12.0);
-  float fresnel = pow(1.0 - surfaceNormal.z, 3.0);
-  float alpha = edge * mix(0.20, 0.29, uDark) + bevel * specular * 0.19 + bevel * fresnel * 0.11;
-  vec3 color = vec3(1.0);
+  float bevel = 1.0 - smoothstep(0.0, bevelWidth, max(depth, 0.0));
+  vec3 light = normalize(vec3(uLight, 1.15));
+  vec3 surfaceNormal = normalize(vec3(normal * bevel, 0.28 + (1.0 - bevel) * 1.1));
+  vec3 halfway = normalize(light + vec3(0.0, 0.0, 1.0));
+  float specular = pow(max(dot(surfaceNormal, halfway), 0.0), 22.0);
+  float fresnel = pow(1.0 - surfaceNormal.z, 2.5);
+  float litSide = smoothstep(-0.45, 0.75, dot(normal, normalize(uLight + vec2(0.0001))));
+  float outerRim = exp(-pow((depth - 0.45) / 0.85, 2.0));
+  float innerRim = exp(-pow((depth - 2.0) / 1.1, 2.0));
+  float caustic = exp(-pow((depth - bevelWidth * 0.48) / 1.7, 2.0)) * specular;
+  vec2 lightDelta = p - uLight * uSize / 1.8;
+  float lightRadius = clamp(uSize.y * 0.9, 36.0, 100.0);
+  float glint = exp(-dot(lightDelta, lightDelta) / (lightRadius * lightRadius));
+  float reflection = (outerRim * (mix(0.025, 0.16, litSide) + glint * 0.13)
+    + bevel * specular * 0.11 * (0.35 + glint * 0.65)
+    + fresnel * 0.035 + caustic * glint * 0.04) * uStrength;
+  float shade = (outerRim * (1.0 - litSide) * 0.035 + innerRim * (1.0 - litSide) * 0.025)
+    * mix(1.0, 0.5, uDark) * uStrength;
+  float alpha = reflection + shade;
+  vec3 color = mix(vec3(0.06), vec3(1.0), reflection / (alpha + 0.0001));
 
   if (uUseCover > 0.5) {
+    vec2 backdropUv = vUv * uBackdropScale + uBackdropOffset;
+    float imageBounds = step(0.0, backdropUv.x) * step(backdropUv.x, 1.0)
+      * step(0.0, backdropUv.y) * step(backdropUv.y, 1.0);
+    float imageMask = clamp((uCoverFade.y - backdropUv.x) / max(0.001, uCoverFade.y - uCoverFade.x), 0.0, 1.0) * imageBounds;
     vec2 baseUv = (vUv - 0.5) * uCoverScale + uCoverOffset;
-    vec2 bend = normal * uCoverPixel * (5.0 + specular * 3.0) * bevel;
+    vec2 bend = normal * uCoverPixel * (7.0 + fresnel * 4.0) * bevel;
     vec2 uv = clamp(baseUv + bend, vec2(0.001), vec2(0.999));
     vec3 refracted = vec3(
-      texture2D(uCover, clamp(uv + normal * uCoverPixel * 0.55, 0.001, 0.999)).r,
+      texture2D(uCover, clamp(uv + normal * uCoverPixel * 0.35, 0.001, 0.999)).r,
       texture2D(uCover, uv).g,
-      texture2D(uCover, clamp(uv - normal * uCoverPixel * 0.55, 0.001, 0.999)).b
+      texture2D(uCover, clamp(uv - normal * uCoverPixel * 0.35, 0.001, 0.999)).b
     );
-    float transmission = bevel * mix(0.22, 0.30, uDark) * uCoverOpacity;
+    float transmission = bevel * 0.40 * uCoverOpacity * imageMask;
     color = mix(refracted, color, clamp(alpha / (alpha + transmission + 0.001), 0.0, 1.0));
     alpha += transmission;
   }
 
   float coverage = 1.0 - smoothstep(-0.7, 0.7, distance);
-  gl_FragColor = vec4(color, clamp(alpha * coverage * uOpacity, 0.0, 0.72));
+  gl_FragColor = vec4(color, clamp(alpha * coverage * uOpacity, 0.0, 0.5));
   #include <colorspace_fragment>
 }`;
 
@@ -130,7 +151,7 @@ class GlassOptics {
       this.invalidate();
     });
     this.observer = new MutationObserver(() => this.invalidate());
-    this.observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'data-glass-surface', 'data-state', 'inert', 'data-open', 'src', 'data-glass-image'] });
+    this.observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'data-glass-surface', 'data-state', 'inert', 'data-open', 'src', 'data-loaded', 'data-glass-image'] });
     this.observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-motion'] });
     this.resize = new ResizeObserver(() => this.invalidate());
     this.resize.observe(document.body);
@@ -218,9 +239,10 @@ class GlassOptics {
         const material = new ShaderMaterial({
         vertexShader, fragmentShader, transparent: true, depthTest: false, depthWrite: false, toneMapped: false,
         uniforms: {
-          uSize: { value: new Vector2() }, uRadius: { value: 8 }, uLight: { value: new Vector2(-0.45, 0.75) },
+          uSize: { value: new Vector2() }, uRadius: { value: 8 }, uLight: { value: new Vector2(-0.45, 0.75) }, uStrength: { value: 0.6 },
           uDark: { value: 0 }, uOpacity: { value: 1 }, uCover: { value: null }, uUseCover: { value: 0 }, uCoverOpacity: { value: 1 },
           uCoverScale: { value: new Vector2(1, 1) }, uCoverOffset: { value: new Vector2(0.5, 0.5) }, uCoverPixel: { value: new Vector2() },
+          uBackdropScale: { value: new Vector2(1, 1) }, uBackdropOffset: { value: new Vector2() }, uCoverFade: { value: new Vector2(1, 2) },
         },
         });
         const mesh = new Mesh(this.geometry, material);
@@ -289,6 +311,7 @@ class GlassOptics {
     }
     const dark = document.documentElement.dataset.theme === 'dark';
     const backdrop = this.backdrop?.getBoundingClientRect();
+    const backdropStyle = this.backdrop ? getComputedStyle(this.backdrop) : null;
     const coverOpacity = this.backdropImage ? Number(getComputedStyle(this.backdropImage).opacity) : 0;
     const blend = visualFrames.motion ? 1 - Math.exp(-Math.min(64, this.lastTime ? time - this.lastTime : 16.7) / 45) : 1;
     this.lastTime = time;
@@ -306,6 +329,7 @@ class GlassOptics {
       surface.mesh.scale.set(rect.width, rect.height, 1);
       uniforms.uSize.value.set(rect.width, rect.height);
       uniforms.uRadius.value = parseFloat(style.borderTopLeftRadius) || 8;
+      uniforms.uStrength.value = Math.max(0, Math.min(1, parseFloat(style.getPropertyValue('--glass-optics-strength')) || 0.6));
       uniforms.uDark.value = dark ? 1 : 0;
       const parent = surface.element.closest('.modal-backdrop');
       uniforms.uOpacity.value = Number(style.opacity) * (parent ? Number(getComputedStyle(parent).opacity) : 1);
@@ -326,6 +350,12 @@ class GlassOptics {
         uniforms.uCoverScale.value.set(rect.width / imageWidth, rect.height / imageHeight);
         uniforms.uCoverOffset.value.set(0.5 + (rect.x + rect.width / 2 - backdrop.x - backdrop.width / 2) / imageWidth, 0.5 - (rect.y + rect.height / 2 - backdrop.y - backdrop.height / 2) / imageHeight);
         uniforms.uCoverPixel.value.set(1 / imageWidth, 1 / imageHeight);
+        uniforms.uBackdropScale.value.set(rect.width / backdrop.width, rect.height / backdrop.height);
+        uniforms.uBackdropOffset.value.set((rect.x - backdrop.x) / backdrop.width, (backdrop.bottom - rect.bottom) / backdrop.height);
+        uniforms.uCoverFade.value.set(
+          Number(backdropStyle?.getPropertyValue('--cover-fade-start') || 1),
+          Number(backdropStyle?.getPropertyValue('--cover-fade-end') || 2),
+        );
       }
     }
     this.canvas.dataset.surfaces = String(visible);

@@ -225,14 +225,16 @@ async function layout(): Promise<unknown> {
     const queue = queueBounds ? { x: queueBounds.x, y: queueBounds.y, right: queueBounds.right, bottom: queueBounds.bottom, width: queueBounds.width, height: queueBounds.height } : null;
     return { width: innerWidth, height: innerHeight, main, player, sidebar, header, queue };
   });
-  assert.ok(result.main.bottom <= result.player.y + 1, 'Content overlaps the player');
+  assert.ok(Math.abs(result.main.bottom - result.height) <= 1, 'Real scrolling content must continue behind the dock');
+  assert.ok(Math.abs(result.player.x - 14) <= 1 && Math.abs(result.player.right - result.width + 14) <= 1, 'Player must keep its horizontal floating clearance');
+  assert.ok(Math.abs(result.player.bottom - result.height + 12) <= 1 && Math.abs(result.player.height - 90) <= 1, 'Player must keep its bottom clearance and fixed height');
   assert.ok(result.sidebar.bottom <= result.player.y + 1, 'Navigation overlaps the player');
   assert.ok(result.main.y >= result.header.bottom - 1, 'Content overlaps the titlebar');
   assert.ok(result.player.right <= result.width + 1, 'Player extends outside the window');
   assert.ok(result.main.scrollWidth <= result.main.clientWidth + 1, 'Music content overflows horizontally');
   if (result.queue) {
     assert.ok(Math.abs(result.queue.y - result.header.bottom) <= 1, 'Queue starts below or overlaps the titlebar');
-    assert.ok(Math.abs(result.queue.bottom - result.player.y) <= 1, 'Queue does not meet the player boundary');
+    assert.ok(Math.abs(result.player.y - result.queue.bottom - 8) <= 1, 'Queue must leave eight pixels above the floating dock');
     assert.ok(result.queue.right <= result.width + 1 && result.queue.x >= 0, 'Queue extends outside the window');
   }
   return result;

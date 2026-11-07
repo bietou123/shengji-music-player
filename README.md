@@ -8,8 +8,8 @@
 
 支持 Windows 10/11 x64，已在 Windows 11 x64 实测。普通用户不需要 Node.js、Python、数据库服务或其他开发环境。
 
-- 安装版：`Shengji-1.2.0-x64-nsis.exe`，可选择安装目录，创建桌面及开始菜单快捷方式。
-- 便携版：`Shengji-1.2.0-x64-portable.exe`，双击运行，不需安装。
+- 安装版：`Shengji-1.2.1-x64-nsis.exe`，可选择安装目录，创建桌面及开始菜单快捷方式。
+- 便携版：`Shengji-1.2.1-x64-portable.exe`，双击运行，不需安装。
 - 两种版本均包含 Electron、Chromium 音频引擎、SQLite WASM 和运行依赖。
 - 当前发行版未购买代码签名证书。Windows 可能显示未知发布者或 SmartScreen 提示，请核对下载来源与 SHA-256。不要关闭系统防护。
 - “便携版”指程序免安装；用户资料仍保存在 `%APPDATA%\Shengji`，不与 EXE 放在一起。
@@ -56,10 +56,10 @@ Jamendo 凭据由 Electron `safeStorage` 使用 Windows DPAPI 加密，不写入
 
 ## 液态玻璃与 GPU
 
-1.2.0 的视觉参考 iOS 26 Liquid Glass，**不是 Windows 上的苹果原生材质**，也不是任意 DOM 的物理级光线追踪。
+视觉参考 iOS 26 Liquid Glass，**不是 Windows 上的苹果原生材质**，也不是任意 DOM 的物理级光线追踪。1.2.1 重调了材质：底部播放栏成为留有边距的悬浮 dock，真实列表和封面继续从后方滚动；降低填色与全宽染色，采用窄曲面边缘、指针局部高光和内缘阴影。搜索框、播放控件与弹窗采用不同光学强度，内容末项仍可完整滚动到播放栏上方。
 
 - **真实页面背景**：Chromium `backdrop-filter` 模糊玻璃后方的实际 DOM；透明填色、内侧边缘及阴影提供厚度感。它不读取 Windows 桌面或其他应用。
-- **真实封面折射**：Three.js / WebGL2 片元着色器对播放栏及迷你窗口的实际封面下衬做边缘位移采样。DOM 图像与纹理使用相同的 `object-fit: cover` 映射。图像只在更换时缩至最长边 512 像素，绝不截屏 DOM；远程图像不允许 CORS 时仍可显示，但不交给着色器采样。
+- **真实封面折射**：Three.js / WebGL2 片元着色器对播放栏及迷你窗口的实际封面下衬做边缘位移采样。DOM 图像与纹理使用相同的 `object-fit: cover` 映射和渐隐遮罩，播放栏封面下衬仅位于左侧，不向其范围外绘制封面颜色。图像只在更换时缩至最长边 512 像素，绝不截屏 DOM；远程图像不允许 CORS 时仍可显示，但不交给着色器采样。
 - **光学近似**：圆角距离场形成窄边缘的折射、柔和高光及 Fresnel 近似，高光随指针移动。其他玻璃表面只有真实 DOM 模糊和近似边缘光照，不宣称着色器能够直接读取它们后方的页面。没有封面时不生成假背景。
 - **交互路径**：按压、导航和面板使用 `transform` / `opacity`，不逐帧动画化布局。进度、音量及均衡器滑块即时更新，不等待动画；列表保留紧凑普通行，不逐行增加玻璃层。
 - **渲染预算**：每个窗口只有一个 WebGL 画布与一个共享 RAF 调度器，最多 8 个复用的光学表面；画布最多约 150 万像素，DPR 不超过 1.5。交互结束后不继续提交玻璃帧。频谱以约 30Hz 读取真实 Web Audio 信号，不每帧更新 React 全局状态。
@@ -133,12 +133,13 @@ npm run test:online
 npm run build
 npm run test:e2e
 npm run test:glass
+npm run test:appearance
 npm run package
 # 打包完成后验证便携启动器、播放及恢复
 npm run test:portable
 ```
 
-端到端测试默认读取桌面的 `Florian Bur - Living.mp3`，只读取，不修改原文件。其他电脑可以指定自己的合法 MP3（这项测试仍会检查 Living / Florian Bur 的标签）。测试生成独立资料库和带标签 / LRC 的 WAV，不修改正常使用数据；窗口位于屏幕外，不占任务栏、不创建测试托盘，通过 Chromium `--mute-audio` 保持扬声器静音。音效测试使用已知频率的数字信号实测 FFT、均衡器增益和压缩器变化，不把静音测试冒充人工试听。玻璃测试另用明确命名的合成封面测试图验证颜色与像素变化，它不属于产品默认内容，也不随发行包发布。
+端到端测试默认读取桌面的 `Florian Bur - Living.mp3`，只读取，不修改原文件。其他电脑可以指定自己的合法 MP3（这项测试仍会检查 Living / Florian Bur 的标签）。测试生成独立资料库和带标签 / LRC 的 WAV，不修改正常使用数据；窗口位于屏幕外，不占任务栏、不创建测试托盘，通过 Chromium `--mute-audio` 保持扬声器静音。音效测试使用已知频率的数字信号实测 FFT、均衡器增益和压缩器变化，不把静音测试冒充人工试听。玻璃测试另用明确命名的合成封面测试图验证颜色与像素变化，它不属于产品默认内容，也不随发行包发布。`test:appearance` 则使用实时 Apple 目录与真实 Laufey 封面，检查浅深主题、滚动内容、末项可达、最小窗口、音效面板及迷你播放器；截图和原始记录仅留在本机。
 
 ```powershell
 $env:SHENGJI_LOCAL_TEST_FILE = 'D:\Music\Florian Bur - Living.mp3'
@@ -152,6 +153,7 @@ npm run test:e2e
 $env:SHENGJI_E2E_EXECUTABLE = (Resolve-Path 'release\win-unpacked\声迹.exe').Path
 npm run test:e2e
 npm run test:glass
+npm run test:appearance
 
 # 更详细的 GPU 服务跟踪，另存详细样本，不覆盖标准证据
 $env:SHENGJI_GLASS_TRACE_DETAIL = '1'

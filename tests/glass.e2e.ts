@@ -34,6 +34,10 @@ let machine: unknown;
 type DrawSample = { frame: number; time: number; phase: string };
 type LongTask = { duration: number; start: number; phase: string };
 type InteractionPhase = { name: string; start: number; end?: number };
+type PixelSample = {
+  frame: number; colored: number; nonblank: number; hash: number; distinct: number;
+  width: number; height: number; error: number; playerColorInsideCover: number; playerColorOutsideCover: number;
+};
 type DrawProbe = {
   samples: DrawSample[]; longTasks: LongTask[]; phases: InteractionPhase[];
   phase: string; start: number; observer: MutationObserver; tasks: PerformanceObserver;
@@ -155,13 +159,15 @@ async function layout() {
   const [titlebar, sidebar, content, player] = result.boxes;
   assert.ok(result.scrolling.every((element) => element.scrollLeft === 0), `A window root scrolled horizontally: ${JSON.stringify(result.scrolling)}`);
   assert.ok(Math.abs(result.root.x) <= 1 && Math.abs(result.root.width - result.width) <= 1, 'Root is shifted or uses an outdated viewport width');
-  assert.ok(Math.abs(titlebar.x) <= 1 && Math.abs(sidebar.x) <= 1 && Math.abs(player.x) <= 1, `Window chrome is shifted left or right: ${JSON.stringify(result)}`);
-  assert.ok(content.y >= titlebar.bottom - 1 && content.bottom <= player.y + 1, 'Content overlaps titlebar or player');
+  assert.ok(Math.abs(titlebar.x) <= 1 && Math.abs(sidebar.x) <= 1, `Window chrome is shifted left or right: ${JSON.stringify(result)}`);
+  assert.ok(Math.abs(player.x - 14) <= 1 && Math.abs(player.right - (result.width - 14)) <= 1, 'Floating dock must keep its horizontal clearance');
+  assert.ok(Math.abs(player.bottom - (result.height - 12)) <= 1 && Math.abs(player.height - 90) <= 1, 'Floating dock height or bottom clearance changed');
+  assert.ok(content.y >= titlebar.bottom - 1 && Math.abs(content.bottom - result.height) <= 1, 'Real content must continue behind the dock without overlapping the titlebar');
   assert.ok(sidebar.bottom <= player.y + 1 && player.right <= result.width + 1, 'Navigation or player exceeds bounds');
   assert.ok(content.scrollWidth <= content.clientWidth + 1 && result.documentOverflow <= 1, 'Window overflows horizontally');
   if (result.queue) {
     assert.ok(Math.abs(result.queue.y - titlebar.bottom) <= 1, 'Queue starts below or overlaps the titlebar');
-    assert.ok(Math.abs(result.queue.bottom - player.y) <= 1, 'Queue does not meet the player boundary');
+    assert.ok(Math.abs(player.y - result.queue.bottom - 8) <= 1, 'Queue must leave eight pixels above the floating dock');
     assert.ok(result.queue.x >= 0 && result.queue.right <= result.width + 1, 'Queue extends outside the window');
   }
   return result;
@@ -218,7 +224,7 @@ async function installPixelProbe(selector?: string): Promise<void> {
   await page.evaluate((selector) => {
     const canvas = document.querySelector<HTMLCanvasElement>('canvas[data-testid="glass-optics"]')!;
     const gl = canvas.getContext('webgl2')!;
-    const results: { frame: number; colored: number; nonblank: number; hash: number; distinct: number; width: number; height: number; error: number }[] = [];
+    const results: PixelSample[] = [];
     const observer = new MutationObserver(() => {
       if (results.length >= 6 || gl.isContextLost()) return;
       const region = selector ? document.querySelector(selector)!.getBoundingClientRect() : null;
@@ -230,17 +236,28 @@ async function installPixelProbe(selector?: string): Promise<void> {
       const pixels = new Uint8Array(width * height * 4);
       gl.readPixels(x, y, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
       let nonblank = 0, colored = 0, hash = 2166136261;
+      let playerColorInsideCover = 0, playerColorOutsideCover = 0;
+      const player = document.querySelector('.player-bar')?.getBoundingClientRect();
+      const underlay = document.querySelector('[data-glass-backdrop]')?.getBoundingClientRect();
       const colors = new Set<number>();
       for (let i = 0; i < pixels.length; i += 16) {
         if (pixels[i + 3]) {
           nonblank++;
-          if (Math.max(pixels[i], pixels[i + 1], pixels[i + 2]) - Math.min(pixels[i], pixels[i + 1], pixels[i + 2]) > 8) colored++;
+          if (Math.max(pixels[i], pixels[i + 1], pixels[i + 2]) - Math.min(pixels[i], pixels[i + 1], pixels[i + 2]) > 8) {
+            colored++;
+            const cssX = (x + (i / 4) % width) / scaleX;
+            const cssY = (gl.drawingBufferHeight - y - Math.floor((i / 4) / width)) / scaleY;
+            if (player && underlay && cssX > player.left + 2 && cssX < player.right - 2 && cssY > player.top + 2 && cssY < player.bottom - 2) {
+              if (cssX < underlay.right - 2) playerColorInsideCover++;
+              if (cssX > underlay.right + 2) playerColorOutsideCover++;
+            }
+          }
           colors.add((pixels[i] >> 4) << 8 | (pixels[i + 1] >> 4) << 4 | pixels[i + 2] >> 4);
         }
         hash = Math.imul(hash ^ pixels[i], 16777619) >>> 0;
         hash = Math.imul(hash ^ pixels[i + 3], 16777619) >>> 0;
       }
-      results.push({ frame: Number(canvas.dataset.frame), colored, nonblank, hash, distinct: colors.size, width, height, error: gl.getError() });
+      results.push({ frame: Number(canvas.dataset.frame), colored, nonblank, hash, distinct: colors.size, width, height, error: gl.getError(), playerColorInsideCover, playerColorOutsideCover });
     });
     observer.observe(canvas, { attributes: true, attributeFilter: ['data-frame'] });
     (window as unknown as { glassPixels: { results: typeof results; observer: MutationObserver } }).glassPixels = { results, observer };
@@ -249,7 +266,7 @@ async function installPixelProbe(selector?: string): Promise<void> {
 
 async function pixels() {
   return page.evaluate(() => {
-    const probe = (window as unknown as { glassPixels: { results: { frame: number; colored: number; nonblank: number; hash: number; distinct: number; width: number; height: number; error: number }[]; observer: MutationObserver } }).glassPixels;
+    const probe = (window as unknown as { glassPixels: { results: PixelSample[]; observer: MutationObserver } }).glassPixels;
     probe.observer.disconnect();
     return probe.results;
   });
@@ -390,6 +407,8 @@ try {
     assert.ok(samples.every((sample) => sample.error === 0), `WebGL pixel diagnostics: ${JSON.stringify(samples)}`);
     assert.ok(samples.some((sample) => sample.nonblank > 100 && sample.distinct > 3), 'Canvas must contain actual visible pixels');
     assert.ok(new Set(samples.map((sample) => sample.hash)).size > 1, 'Interaction must change rendered pixels');
+    assert.ok(samples.some((sample) => sample.playerColorInsideCover > 10), 'The real cover underlay must supply colored refraction pixels');
+    assert.ok(samples.every((sample) => sample.playerColorOutsideCover === 0), 'Cover refraction must not invent image pixels outside the actual masked underlay');
     return { state: await state(), samples };
   });
 
